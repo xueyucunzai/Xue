@@ -1,0 +1,255 @@
+
+<!doctype html><html lang="zh-CN"><head>
+<script>window.QV_API = "";</script><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QuantVote Adaptive</title><link rel="stylesheet" href="style.css"></head>
+<body><main>
+<header><div><h1>QuantVote</h1><div class="sub">Adaptive Weight · 多周期量化研究</div></div><span id="status">连接中…</span></header>
+<section class="hero"><div><div class="label">BTC/USDT</div><div id="price" class="price">--</div></div><div class="note">权重来自最近历史命中率，不代表真实概率</div></section>
+<section class="card"><h2>多周期综合</h2><div id="overall" class="overall">--</div><div id="overallbar" class="bar"><i></i></div></section>
+<section class="grid" id="cards"></section>
+<section class="card"><h2>自适应权重</h2><div class="tablewrap"><table><thead><tr><th>指标</th><th>15m</th><th>1H</th><th>4H</th><th>1D</th></tr></thead><tbody id="weights"></tbody></table></div></section>
+<section class="card"><h2>Walk-forward 回测</h2>
+<div class="controls">
+<select id="btInt"><option value="15m">15m</option><option value="1h" selected>1H</option><option value="4h">4H</option><option value="1d">1D</option></select>
+<select id="btDays"><option value="30">30天</option><option value="90" selected>90天</option><option value="180">180天</option></select>
+<button id="runBt">开始回测</button>
+</div>
+<div id="bt" class="btgrid"><div><span>累计收益</span><b>--</b></div><div><span>最大回撤</span><b>--</b></div><div><span>Sharpe</span><b>--</b></div><div><span>胜率</span><b>--</b></div><div><span>交易次数</span><b>--</b></div></div>
+<p class="sub">默认手续费 0.10% + 滑点 0.05%。信号只使用当时及以前的数据，避免直接偷看下一根 K 线。</p></section>
+<section class="card"><h2>模型对决</h2>
+<div class="controls"><select id="mcInt"><option value="1h" selected>1H</option><option value="15m">15m</option><option value="4h">4H</option><option value="1d">1D</option></select>
+<select id="mcDays"><option value="30" selected>30天</option><option value="60">60天</option><option value="90">90天</option></select>
+<button id="runMc">比较模型</button></div>
+<div class="tablewrap"><table><thead><tr><th>策略</th><th>收益</th><th>最大回撤</th><th>Sharpe</th><th>胜率</th><th>交易</th></tr></thead><tbody id="mc"></tbody></table></div>
+<p class="sub">XGBoost 使用严格时间顺序训练；ARIMA 每一步只使用历史数据。这里的“收益/胜率”是研究回测结果，不是未来保证。</p></section>
+<section class="card"><h2>自适应融合决策</h2>
+<div class="controls"><select id="enInt"><option value="1h" selected>1H</option><option value="15m">15m</option><option value="4h">4H</option><option value="1d">1D</option></select>
+<select id="enDays"><option value="30" selected>30天</option><option value="60">60天</option><option value="90">90天</option></select>
+<button id="runEn">计算融合</button></div>
+<div id="enResult" class="ensemble"><div class="big">--</div><div id="enMeta" class="sub">等待计算</div></div>
+<div class="tablewrap"><table><thead><tr><th>模型</th><th>近期方向准确率</th><th>当前方向</th><th>动态权重</th></tr></thead><tbody id="enTable"></tbody></table></div>
+</section>
+<section class="card"><h2>🧪 Quant Research Lab</h2>
+<div class="controls"><select id="labInt"><option value="1h" selected>1H</option><option value="15m">15m</option><option value="4h">4H</option><option value="1d">1D</option></select>
+<select id="labDays"><option value="90">90天</option><option value="120" selected>120天</option><option value="180">180天</option></select>
+<button id="runLab">运行实验</button></div>
+<div id="labSummary" class="btgrid"></div>
+<div class="tablewrap"><table><thead><tr><th>测试成本</th><th>收益</th><th>最大回撤</th><th>交易次数</th></tr></thead><tbody id="costs"></tbody></table></div>
+<p class="sub">参数只在训练集选择；验证集用于检查泛化；测试集最后才打开。Buy & Hold 作为基准。结果不是未来收益承诺。</p>
+</section>
+<section class="card"><h2>🛡️ 防过拟合优化器</h2>
+<div class="controls"><select id="opInt"><option value="1h" selected>1H</option><option value="15m">15m</option><option value="4h">4H</option><option value="1d">1D</option></select>
+<select id="opDays"><option value="90">90天</option><option value="120" selected>120天</option><option value="180">180天</option></select>
+<button id="runOp">优化策略</button></div>
+<div id="opScore" class="ensemble"><div class="big">--</div><div class="sub">等待优化</div></div>
+<div class="tablewrap"><table><thead><tr><th>参数</th><th>Train</th><th>Validation</th><th>验证回撤</th><th>选择分</th></tr></thead><tbody id="opTable"></tbody></table></div>
+<div id="opTest" class="sub"></div>
+</section>
+<section class="card"><h2>研究说明</h2><p class="sub">系统按时间顺序使用历史 K 线估计各指标近期命中率，再归一化为投票权重。它不是预测概率，也没有自动下单功能。</p></section>
+
+<section id="adaptive-v2-panel" class="panel chart-panel">
+  <div class="section-head">
+    <div><h2>🧠 Adaptive Ensemble 2.0</h2><p>周期权重 × 模型权重；权重只使用历史 OOS 信息，并限制单一模型/周期的集中度</p></div>
+    <button id="runAdaptiveV2">运行 Adaptive 2.0</button>
+  </div>
+  <div class="metric-grid">
+    <div class="metric"><span>最终方向</span><strong id="a2Action">-</strong></div>
+    <div class="metric"><span>综合分数</span><strong id="a2Score">-</strong></div>
+    <div class="metric"><span>置信展示</span><strong id="a2Confidence">-</strong></div>
+  </div>
+  <div class="audit-detail"><h4>周期权重</h4><div id="a2Periods" class="chip-row"></div></div>
+  <div class="audit-detail" style="margin-top:12px"><h4>各周期模型权重 / 当前方向</h4><div id="a2Models" class="muted">点击运行</div></div>
+</section>
+</main><script src="app.js"></script>
+<section id="backtest-chart-panel" class="panel chart-panel">
+  <div class="section-head">
+    <div>
+      <h2>回测可视化</h2>
+      <p>价格、策略资金曲线、Buy &amp; Hold、买卖点与回撤</p>
+    </div>
+    <div class="chart-controls">
+      <select id="chartInterval">
+        <option value="15m">15分钟</option>
+        <option value="1h" selected>1小时</option>
+        <option value="4h">4小时</option>
+        <option value="1d">1天</option>
+      </select>
+      <select id="chartDays">
+        <option value="30">30天</option>
+        <option value="90" selected>90天</option>
+        <option value="180">180天</option>
+      </select>
+      <button id="loadChartBtn">刷新回测</button>
+    </div>
+  </div>
+
+  <div class="metric-grid" id="chartStats">
+    <div class="metric"><span>策略收益</span><strong id="chartReturn">-</strong></div>
+    <div class="metric"><span>Buy &amp; Hold</span><strong id="chartBH">-</strong></div>
+    <div class="metric"><span>最大回撤</span><strong id="chartDD">-</strong></div>
+    <div class="metric"><span>Sharpe</span><strong id="chartSharpe">-</strong></div>
+    <div class="metric"><span>交易次数</span><strong id="chartTrades">-</strong></div>
+    <div class="metric"><span>胜率</span><strong id="chartWinRate">-</strong></div>
+  </div>
+
+  <div class="canvas-wrap">
+    <canvas id="equityCanvas"></canvas>
+  </div>
+  <div class="legend-row">
+    <span>— BTC价格</span>
+    <span>— 策略资金曲线</span>
+    <span>— Buy &amp; Hold</span>
+    <span>▲ 买入</span>
+    <span>▼ 卖出/做空</span>
+  </div>
+  <div class="canvas-wrap small">
+    <canvas id="drawdownCanvas"></canvas>
+  </div>
+  <div id="chartStatus" class="muted">等待加载回测…</div>
+</section>
+
+
+<section id="trade-audit-panel" class="panel chart-panel">
+  <div class="section-head">
+    <div>
+      <h2>交易审计</h2>
+      <p>检查每次买入、卖出或退出背后的指标证据</p>
+    </div>
+  </div>
+  <div class="audit-layout">
+    <div class="audit-list" id="auditList">
+      <div class="muted">正在加载交易审计…</div>
+    </div>
+    <div class="audit-detail" id="auditDetail">
+      <div class="muted">点击左侧交易查看详细信号</div>
+    </div>
+  </div>
+</section>
+
+
+<section id="ensemble-audit-panel" class="panel chart-panel">
+  <div class="section-head">
+    <div>
+      <h2>模型决策审计</h2>
+      <p>技术指标 + XGBoost + ARIMA → Ensemble</p>
+    </div>
+  </div>
+  <div class="model-status" id="modelStatus">正在检查模型…</div>
+  <div class="audit-layout">
+    <div class="audit-list" id="ensembleAuditList">
+      <div class="muted">正在计算模型决策…</div>
+    </div>
+    <div class="audit-detail" id="ensembleAuditDetail">
+      <div class="muted">点击一笔交易查看三个模型如何共同决策</div>
+    </div>
+  </div>
+</section>
+
+
+<section id="adaptive-weight-panel" class="panel chart-panel">
+  <div class="section-head">
+    <div>
+      <h2>自适应模型权重</h2>
+      <p>验证集选权重，测试集锁定权重</p>
+    </div>
+    <button id="loadAdaptiveBtn">运行权重优化</button>
+  </div>
+  <div class="metric-grid">
+    <div class="metric"><span>指标权重</span><strong id="awInd">-</strong></div>
+    <div class="metric"><span>XGBoost 权重</span><strong id="awXgb">-</strong></div>
+    <div class="metric"><span>ARIMA 权重</span><strong id="awArima">-</strong></div>
+    <div class="metric"><span>测试收益</span><strong id="awReturn">-</strong></div>
+    <div class="metric"><span>测试回撤</span><strong id="awDD">-</strong></div>
+    <div class="metric"><span>测试交易</span><strong id="awTrades">-</strong></div>
+  </div>
+  <div class="audit-detail">
+    <h4>验证集排名</h4>
+    <div id="adaptiveRanking" class="muted">点击运行权重优化</div>
+  </div>
+</section>
+
+
+<section id="regime-panel" class="panel chart-panel">
+  <div class="section-head">
+    <div>
+      <h2>市场状态识别</h2>
+      <p>趋势、波动率与动量共同判断当前市场环境</p>
+    </div>
+    <button id="loadRegimeBtn">刷新市场状态</button>
+  </div>
+
+  <div class="metric-grid">
+    <div class="metric"><span>当前状态</span><strong id="regimeNow">-</strong></div>
+    <div class="metric"><span>趋势强度</span><strong id="regimeTrend">-</strong></div>
+    <div class="metric"><span>波动率</span><strong id="regimeVol">-</strong></div>
+    <div class="metric"><span>20周期动量</span><strong id="regimeMom">-</strong></div>
+  </div>
+
+  <div class="audit-detail">
+    <h4>市场状态分布</h4>
+    <div id="regimeDistribution" class="chip-row"></div>
+  </div>
+
+  <div class="audit-detail" style="margin-top:12px">
+    <h4>状态 → Ensemble 权重</h4>
+    <div id="regimeWeights"></div>
+  </div>
+
+  <div class="metric-grid" style="margin-top:12px">
+    <div class="metric"><span>状态策略收益</span><strong id="regimeReturn">-</strong></div>
+    <div class="metric"><span>Buy &amp; Hold</span><strong id="regimeBH">-</strong></div>
+    <div class="metric"><span>最大回撤</span><strong id="regimeDD">-</strong></div>
+    <div class="metric"><span>交易次数</span><strong id="regimeTrades">-</strong></div>
+  </div>
+</section>
+
+
+<section id="walkforward-panel" class="panel chart-panel">
+  <div class="section-head">
+    <div>
+      <h2>Walk-Forward 联合优化</h2>
+      <p>市场状态 × 模型权重 × 信号阈值</p>
+    </div>
+    <button id="runWalkForward">运行优化</button>
+  </div>
+  <div class="metric-grid">
+    <div class="metric"><span>选中方案</span><strong id="wfChosen">-</strong></div>
+    <div class="metric"><span>验证集平均收益</span><strong id="wfValid">-</strong></div>
+    <div class="metric"><span>验证集胜率</span><strong id="wfWin">-</strong></div>
+    <div class="metric"><span>最终测试收益</span><strong id="wfTest">-</strong></div>
+    <div class="metric"><span>测试胜率</span><strong id="wfTestWin">-</strong></div>
+    <div class="metric"><span>测试交易</span><strong id="wfTrades">-</strong></div>
+  </div>
+  <div class="audit-detail">
+    <h4>候选方案排名</h4>
+    <div id="wfRanking" class="muted">点击运行优化</div>
+  </div>
+</section>
+
+
+<section id="health-panel" class="panel chart-panel">
+  <div class="section-head">
+    <div>
+      <h2>策略体检中心</h2>
+      <p>过拟合、时间稳定性、交易成本与参数敏感度</p>
+    </div>
+    <button id="runHealthCheck">开始体检</button>
+  </div>
+  <div class="metric-grid">
+    <div class="metric"><span>稳健性评分</span><strong id="hcScore">-</strong></div>
+    <div class="metric"><span>总收益</span><strong id="hcReturn">-</strong></div>
+    <div class="metric"><span>最大回撤</span><strong id="hcMdd">-</strong></div>
+    <div class="metric"><span>Sharpe Proxy</span><strong id="hcSharpe">-</strong></div>
+    <div class="metric"><span>交易次数</span><strong id="hcTrades">-</strong></div>
+    <div class="metric"><span>高成本收益</span><strong id="hcCost">-</strong></div>
+  </div>
+  <div class="audit-detail">
+    <h4>诊断结果</h4><div id="hcFlags" class="muted">点击开始体检</div>
+    <h4>时间段稳定性</h4><div id="hcPeriods" class="muted"></div>
+    <h4>手续费压力测试</h4><div id="hcCosts" class="muted"></div>
+    <h4>参数敏感度</h4><div id="hcSensitivity" class="muted"></div>
+  </div>
+</section>
+
+</body></html>
