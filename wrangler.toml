@@ -1,9 +1,5 @@
-name = "quantvote-api-proxy"
+name = "xue"
 main = "worker.js"
 compatibility_date = "2026-10-07"
 
-# QUANT_ENGINE_URL is intentionally NOT stored in this file.
-# Set it as a Cloudflare Worker secret:
-# npx wrangler secret put QUANT_ENGINE_URL
-[secrets]
-required = ["QUANT_ENGINE_URL"]
+# QUANT_ENGINE_URL is configured as a Cloudflare Worker Secret.
