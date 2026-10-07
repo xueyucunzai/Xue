@@ -540,7 +540,7 @@ function kdj(candles,period=9){
   return {
     k,
     d,
-    j=3*k-2*d
+    j:3*k-2*d
   };
 }
 
