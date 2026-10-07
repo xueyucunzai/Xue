@@ -1,46 +1,89 @@
 export default {
-  async fetch(request, env) {
+  async fetch(request) {
     const url = new URL(request.url);
 
-    if (!url.pathname.startsWith('/api/')) {
-      return new Response('QuantVote API proxy', { status: 404 });
-    }
-
-    const origin = 'https://xue-8e742.containers.snapdeploy.app';
-
-    const target = origin + url.pathname + url.search;
-
-    const headers = new Headers(request.headers);
-    headers.delete('host');
-    headers.set('X-Forwarded-By', 'quantvote-cloudflare');
-
-    try {
-      const upstream = await fetch(target, {
-        method: request.method,
-        headers,
-        body:
-          request.method === 'GET' || request.method === 'HEAD'
-            ? undefined
-            : request.body,
+    // 首页
+    if (url.pathname === "/") {
+      return json({
+        status: "ok",
+        service: "quantvote",
+        version: "cloudflare-v1"
       });
-
-      const out = new Response(upstream.body, upstream);
-      out.headers.set('X-QuantVote-Proxy', 'cloudflare-worker');
-
-      return out;
-    } catch (error) {
-      return new Response(
-        JSON.stringify({
-          error: 'QuantVote upstream connection failed',
-          detail: String(error),
-        }),
-        {
-          status: 502,
-          headers: {
-            'content-type': 'application/json',
-          },
-        }
-      );
     }
-  },
+
+    // 健康检查
+    if (url.pathname === "/api/health") {
+      return json({
+        status: "ok",
+        service: "quantvote",
+        version: "cloudflare-v1",
+        data_source: "binance-public-api"
+      });
+    }
+
+    // Binance 行情
+    if (url.pathname === "/api/market") {
+      const symbol =
+        (url.searchParams.get("symbol") || "BTCUSDT").toUpperCase();
+
+      const interval =
+        url.searchParams.get("interval") || "1h";
+
+      const limit = Math.min(
+        Number(url.searchParams.get("limit") || 100),
+        1000
+      );
+
+      const binanceUrl =
+        "https://api.binance.com/api/v3/klines" +
+        "?symbol=" + encodeURIComponent(symbol) +
+        "&interval=" + encodeURIComponent(interval) +
+        "&limit=" + limit;
+
+      try {
+        const response = await fetch(binanceUrl, {
+          headers: {
+            "User-Agent": "QuantVote-Cloudflare"
+          }
+        });
+
+        const data = await response.text();
+
+        return new Response(data, {
+          status: response.status,
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store"
+          }
+        });
+      } catch (error) {
+        return json(
+          {
+            status: "error",
+            error: String(error)
+          },
+          502
+        );
+      }
+    }
+
+    return json(
+      {
+        status: "error",
+        error: "Not Found"
+      },
+      404
+    );
+  }
 };
+
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store"
+    }
+  });
+}
