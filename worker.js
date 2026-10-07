@@ -1520,6 +1520,29 @@ async function regimeEndpoint(url){
 
 }
 
+/*
+  QuantVote Backtest V2
+
+  交易定义：
+  - Entry: score >= 3
+  - Exit: score <= 0
+  - Long only
+  - 每次只持有一个仓位
+  - 不计手续费
+  - 不计滑点
+
+  新增：
+  - completedTrades
+  - averageWinPercent
+  - averageLossPercent
+  - winLossRatio
+  - profitFactor
+  - maxDrawdownPercent
+  - maxLosingStreak
+  - maxWinningStreak
+  - tradeDetails
+*/
+
 async function backtestEndpoint(url){
 
   const symbol=
@@ -1551,9 +1574,11 @@ async function backtestEndpoint(url){
 
   let position=0;
   let entry=0;
+  let entryTime=0;
+
   let equity=1;
-  let trades=0;
-  let wins=0;
+
+  const completedTrades=[];
 
   const equityCurve=[];
 
@@ -1571,87 +1596,348 @@ async function backtestEndpoint(url){
     const price=
       candles[i].close;
 
+    const time=
+      candles[i].time;
+
+    /*
+      开仓
+    */
     if(position===0){
 
       if(vote.score>=3){
 
         position=1;
         entry=price;
-        trades++;
+        entryTime=time;
 
       }
 
-    }else{
+    }
+
+    /*
+      平仓
+    */
+    else{
 
       if(vote.score<=0){
 
         const returnPct=
-          (price-entry)/entry;
+          ((price-entry)/entry)*100;
+
+        const equityBefore=equity;
 
         equity*=
-          1+returnPct;
+          1+(returnPct/100);
 
-        if(returnPct>0)
-          wins++;
+        completedTrades.push({
+          trade:
+            completedTrades.length+1,
+          entryTime,
+          exitTime:time,
+          entryPrice:entry,
+          exitPrice:price,
+          returnPercent:returnPct,
+          equityBefore,
+          equityAfter:equity,
+          result:
+            returnPct>0
+            ?"win"
+            :"loss"
+        });
 
         position=0;
         entry=0;
+        entryTime=0;
 
       }
 
     }
 
     equityCurve.push({
-      time:candles[i].time,
+      time,
       equity
     });
 
   }
 
+  /*
+    如果回测结束时仍有持仓，
+    用最后一根K线强制平仓。
+  */
   if(position===1){
 
     const price=
       candles[candles.length-1].close;
 
+    const time=
+      candles[candles.length-1].time;
+
     const returnPct=
-      (price-entry)/entry;
+      ((price-entry)/entry)*100;
 
-    equity*=1+returnPct;
+    const equityBefore=equity;
 
-    if(returnPct>0)
-      wins++;
+    equity*=
+      1+(returnPct/100);
+
+    completedTrades.push({
+      trade:
+        completedTrades.length+1,
+      entryTime,
+      exitTime:time,
+      entryPrice:entry,
+      exitPrice:price,
+      returnPercent:returnPct,
+      equityBefore,
+      equityAfter:equity,
+      result:
+        returnPct>0
+        ?"win"
+        :"loss",
+      forcedExit:true
+    });
+
+    position=0;
 
   }
+
+  /*
+    统计交易
+  */
+
+  const wins=
+    completedTrades.filter(
+      x=>x.returnPercent>0
+    );
+
+  const losses=
+    completedTrades.filter(
+      x=>x.returnPercent<=0
+    );
+
+  const winReturns=
+    wins.map(
+      x=>x.returnPercent
+    );
+
+  const lossReturns=
+    losses.map(
+      x=>Math.abs(x.returnPercent)
+    );
+
+  const averageWinPercent=
+    winReturns.length
+    ? average(winReturns)
+    : 0;
+
+  const averageLossPercent=
+    lossReturns.length
+    ? average(lossReturns)
+    : 0;
+
+  const winLossRatio=
+    averageLossPercent>0
+    ? averageWinPercent/averageLossPercent
+    : null;
+
+  /*
+    Profit Factor
+
+    总盈利金额 / 总亏损金额
+
+    这里使用百分比收益近似统计，
+    与当前 1 单位资金、全仓单次交易模型一致。
+  */
+
+  const grossProfit=
+    winReturns.reduce(
+      (a,b)=>a+b,
+      0
+    );
+
+  const grossLoss=
+    lossReturns.reduce(
+      (a,b)=>a+b,
+      0
+    );
+
+  const profitFactor=
+    grossLoss>0
+    ? grossProfit/grossLoss
+    : null;
+
+  /*
+    最大连续盈利 / 最大连续亏损
+  */
+
+  let currentWinningStreak=0;
+  let currentLosingStreak=0;
+
+  let maxWinningStreak=0;
+  let maxLosingStreak=0;
+
+  for(const trade of completedTrades){
+
+    if(trade.returnPercent>0){
+
+      currentWinningStreak++;
+      currentLosingStreak=0;
+
+      maxWinningStreak=
+        Math.max(
+          maxWinningStreak,
+          currentWinningStreak
+        );
+
+    }else{
+
+      currentLosingStreak++;
+      currentWinningStreak=0;
+
+      maxLosingStreak=
+        Math.max(
+          maxLosingStreak,
+          currentLosingStreak
+        );
+
+    }
+
+  }
+
+  /*
+    最大回撤
+
+    Drawdown =
+    当前权益 / 历史最高权益 - 1
+  */
+
+  let peakEquity=1;
+  let maxDrawdownPercent=0;
+
+  for(const point of equityCurve){
+
+    if(point.equity>peakEquity){
+
+      peakEquity=point.equity;
+
+    }
+
+    if(peakEquity>0){
+
+      const drawdown=
+        ((point.equity/peakEquity)-1)*100;
+
+      if(drawdown<maxDrawdownPercent){
+
+        maxDrawdownPercent=
+          drawdown;
+
+      }
+
+    }
+
+  }
+
+  /*
+    最大回撤输出为正数，
+    例如 12.5 表示最大回撤 12.5%
+  */
+
+  const maxDrawdown=
+    Math.abs(maxDrawdownPercent);
+
+  /*
+    最终结果
+  */
+
+  const totalReturnPercent=
+    (equity-1)*100;
+
+  const trades=
+    completedTrades.length;
+
+  const winsCount=
+    wins.length;
+
+  const winRatePercent=
+    trades>0
+    ? (winsCount/trades)*100
+    : 0;
 
   return{
     status:"ok",
     source:"kraken",
     symbol:String(symbol).toUpperCase(),
+    pair:result.pair,
     interval,
     candles:candles.length,
+
     result:{
+
       initialEquity:1,
+
       finalEquity:equity,
-      totalReturnPercent:
-        (equity-1)*100,
+
+      totalReturnPercent,
+
       trades,
-      wins,
-      winRatePercent:
-        trades>0
-        ? (wins/trades)*100
-        : 0
+
+      wins:winsCount,
+
+      losses:losses.length,
+
+      winRatePercent,
+
+      averageWinPercent,
+
+      averageLossPercent,
+
+      winLossRatio,
+
+      grossProfitPercent:grossProfit,
+
+      grossLossPercent:grossLoss,
+
+      profitFactor,
+
+      maxDrawdownPercent:maxDrawdown,
+
+      maxWinningStreak,
+
+      maxLosingStreak
+
     },
+
+    tradeDetails:completedTrades,
+
+    equityCurve,
+
     methodology:{
-      name:"QuantVote Basic Backtest",
+
+      name:"QuantVote Basic Backtest V2",
+
       entry:"score >= 3",
+
       exit:"score <= 0",
+
       position:"long only",
+
+      sizing:"100% equity per position",
+
       fees:"not included",
+
       slippage:"not included",
+
+      maxDrawdown:
+        "基于历史权益曲线计算",
+
+      profitFactor:
+        "总盈利百分比 / 总亏损百分比",
+
       note:
         "这是基础历史模拟，不代表未来表现。"
-    },
-    equityCurve
+    }
+
   };
 
 }
