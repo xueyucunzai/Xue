@@ -5,6 +5,65 @@ const CORS_HEADERS = {
   "Cache-Control": "no-store"
 };
 
+/* =========================================================
+   Kraken 请求稳定层
+   ========================================================= */
+
+const OHLC_CACHE = new Map();
+const OHLC_INFLIGHT = new Map();
+
+let PAIRS_CACHE = null;
+let PAIRS_CACHE_TIME = 0;
+let PAIRS_INFLIGHT = null;
+
+let krakenQueue = Promise.resolve();
+let lastKrakenRequestAt = 0;
+
+const OHLC_CACHE_TTL = 20000;
+const PAIRS_CACHE_TTL = 60000;
+const KRAKEN_REQUEST_GAP = 350;
+
+function sleep(ms){
+  return new Promise(resolve => setTimeout(resolve,ms));
+}
+
+async function queueKrakenRequest(task){
+  const previous = krakenQueue;
+
+  let release;
+
+  krakenQueue = new Promise(resolve => {
+    release = resolve;
+  });
+
+  await previous;
+
+  try{
+    const now = Date.now();
+
+    const wait =
+      Math.max(
+        0,
+        KRAKEN_REQUEST_GAP -
+        (now-lastKrakenRequestAt)
+      );
+
+    if(wait>0){
+      await sleep(wait);
+    }
+
+    return await task();
+
+  }finally{
+    lastKrakenRequestAt = Date.now();
+    release();
+  }
+}
+
+/* =========================================================
+   HTML
+   ========================================================= */
+
 const HTML = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -183,6 +242,7 @@ pre{
 let currentSymbol = "BTCUSD";
 let currentPair = "XBTUSD";
 let refreshTimer = null;
+let loadingData = false;
 
 function esc(v){
   return String(v ?? "")
@@ -202,19 +262,27 @@ function cls(v){
 
 function fmtPrice(v){
   if(v===null || v===undefined || !isFinite(Number(v))) return "—";
+
   const n=Number(v);
+
   if(n>=1000) return n.toFixed(2);
   if(n>=1) return n.toFixed(4);
   if(n>=0.01) return n.toFixed(6);
+
   return n.toFixed(8);
 }
 
 async function api(path){
-  const r=await fetch(path,{cache:"no-store"});
+  const r=await fetch(path,{
+    cache:"no-store"
+  });
+
   const j=await r.json();
+
   if(!r.ok || j.status==="error"){
     throw new Error(j.error || "API 请求失败");
   }
+
   return j;
 }
 
@@ -227,14 +295,18 @@ async function doPairsSearch(){
   }
 
   const box=document.getElementById("searchResults");
+
   box.style.display="block";
   box.innerHTML="<div class='search-result'>搜索中...</div>";
 
   try{
-    const data=await api("/api/pairs?q="+encodeURIComponent(q));
+    const data=await api(
+      "/api/pairs?q="+encodeURIComponent(q)
+    );
 
     if(!data.results || !data.results.length){
-      box.innerHTML="<div class='search-result'>没有找到交易对</div>";
+      box.innerHTML=
+        "<div class='search-result'>没有找到交易对</div>";
       return;
     }
 
@@ -242,13 +314,20 @@ async function doPairsSearch(){
       "<div class='search-result' onclick='selectPair("+
       JSON.stringify(x.symbol)+","+
       JSON.stringify(x.pair)+")'>"+
-      "<div class='result-symbol'>"+esc(x.symbol)+"</div>"+
-      "<div class='result-display'>"+esc(x.display)+"</div>"+
+      "<div class='result-symbol'>"+
+      esc(x.symbol)+
+      "</div>"+
+      "<div class='result-display'>"+
+      esc(x.display)+
+      "</div>"+
       "</div>"
     ).join("");
 
   }catch(e){
-    box.innerHTML="<div class='search-result error'>搜索失败："+esc(e.message)+"</div>";
+    box.innerHTML=
+      "<div class='search-result error'>搜索失败："+
+      esc(e.message)+
+      "</div>";
   }
 }
 
@@ -262,23 +341,35 @@ async function selectPair(symbol,pair){
     "当前："+symbol+" · "+pair;
 
   document.getElementById("priceTitle").textContent=
-    symbol.replace(/USD$|USDT$|USDC$|XBT$/,"")+" 价格";
+    symbol.replace(/USD$|USDT$|USDC$|XBT$/,"")+
+    " 价格";
 
   await loadData();
 }
 
 async function loadData(){
+
+  if(loadingData){
+    return;
+  }
+
+  loadingData=true;
+
   try{
-    document.getElementById("voteBox").textContent="加载中...";
 
-    const pairParam="pair="+encodeURIComponent(currentPair);
+    document.getElementById("voteBox").textContent=
+      "加载中...";
 
-    const [market,multi,vote,ind] = await Promise.all([
-      api("/api/market?"+pairParam),
-      api("/api/multi?"+pairParam),
-      api("/api/vote?"+pairParam),
-      api("/api/indicators?"+pairParam)
-    ]);
+    const pairParam=
+      "pair="+encodeURIComponent(currentPair);
+
+    const [market,multi,vote,ind] =
+      await Promise.all([
+        api("/api/market?"+pairParam),
+        api("/api/multi?"+pairParam),
+        api("/api/vote?"+pairParam),
+        api("/api/indicators?"+pairParam)
+      ]);
 
     document.getElementById("price").textContent=
       fmtPrice(market.price);
@@ -287,69 +378,127 @@ async function loadData(){
 
     document.getElementById("voteBox").innerHTML=
       "<div>1H QuantVote</div>"+
-      "<div class='vote "+voteClass+"'>"+esc(vote.vote)+"</div>"+
+      "<div class='vote "+voteClass+"'>"+
+      esc(vote.vote)+
+      "</div>"+
       "<div><strong>1H Score</strong><br>"+
-      esc(vote.score)+" / 7</div>"+
-      "<div style='margin-top:8px'><strong>风险</strong><br>"+
+      esc(vote.score)+
+      " / 7</div>"+
+      "<div style='margin-top:8px'>"+
+      "<strong>风险</strong><br>"+
       esc(vote.risk || "LOW")+
       "</div>";
 
     const rows=(multi.timeframes || []).map(x =>
       "<tr>"+
-      "<td>"+esc(x.intervalLabel || x.interval)+"</td>"+
-      "<td>"+fmtPrice(x.price)+"</td>"+
-      "<td>"+esc(x.score)+"</td>"+
-      "<td class='"+cls(x.vote)+"'>"+esc(x.vote)+"</td>"+
-      "<td>"+esc(x.trend)+"</td>"+
-      "<td>"+(Number(x.rsi).toFixed(1))+"</td>"+
+      "<td>"+
+      esc(x.intervalLabel || x.interval)+
+      "</td>"+
+      "<td>"+
+      fmtPrice(x.price)+
+      "</td>"+
+      "<td>"+
+      esc(x.score)+
+      "</td>"+
+      "<td class='"+cls(x.vote)+"'>"+
+      esc(x.vote)+
+      "</td>"+
+      "<td>"+
+      esc(x.trend)+
+      "</td>"+
+      "<td>"+
+      (Number(x.rsi).toFixed(1))+
+      "</td>"+
       "</tr>"
     ).join("");
 
     document.getElementById("multiBody").innerHTML=rows;
 
     document.getElementById("indicators").textContent=
-      JSON.stringify(ind.indicators || ind,null,2);
+      JSON.stringify(
+        ind.indicators || ind,
+        null,
+        2
+      );
 
     const reasons=vote.reasons || [];
 
     document.getElementById("reasons").innerHTML=
       reasons.length
-      ? reasons.map(x=>"<div class='reason'>• "+esc(x)+"</div>").join("")
+      ? reasons.map(
+          x =>
+          "<div class='reason'>• "+
+          esc(x)+
+          "</div>"
+        ).join("")
       : "暂无判断依据";
 
   }catch(e){
+
     document.getElementById("voteBox").innerHTML=
-      "<div class='error'>数据加载失败："+esc(e.message)+"</div>";
+      "<div class='error'>数据加载失败："+
+      esc(e.message)+
+      "</div>";
+
+  }finally{
+
+    loadingData=false;
+
   }
 }
 
-document.getElementById("searchInput").addEventListener("keydown",function(e){
-  if(e.key==="Enter") doPairsSearch();
-});
+document
+  .getElementById("searchInput")
+  .addEventListener(
+    "keydown",
+    function(e){
+      if(e.key==="Enter"){
+        doPairsSearch();
+      }
+    }
+  );
 
 loadData();
 
-refreshTimer=setInterval(function(){
-  loadData();
-},60000);
+refreshTimer=setInterval(
+  function(){
+    loadData();
+  },
+  60000
+);
 </script>
 </body>
 </html>`;
 
+/* =========================================================
+   JSON
+   ========================================================= */
+
 function json(data,status=200){
-  return new Response(JSON.stringify(data,null,2),{
-    status,
-    headers:{
-      ...CORS_HEADERS,
-      "Content-Type":"application/json;charset=UTF-8"
+  return new Response(
+    JSON.stringify(data,null,2),
+    {
+      status,
+      headers:{
+        ...CORS_HEADERS,
+        "Content-Type":
+          "application/json;charset=UTF-8"
+      }
     }
-  });
+  );
 }
+
+/* =========================================================
+   基础工具
+   ========================================================= */
 
 function normalizeSymbol(symbol){
   const s=String(symbol||"").toUpperCase();
 
-  if(s==="BTCUSD" || s==="XBTUSD"){
+  if(
+    s==="BTCUSD" ||
+    s==="XBTUSD"
+  ){
     return "XBTUSD";
   }
 
@@ -358,33 +507,55 @@ function normalizeSymbol(symbol){
 
 function cleanNumber(v){
   const n=Number(v);
-  return Number.isFinite(n) ? n : null;
+
+  return Number.isFinite(n)
+    ? n
+    : null;
 }
 
 function sma(values,period){
   if(values.length<period) return null;
+
   let sum=0;
-  for(let i=values.length-period;i<values.length;i++){
+
+  for(
+    let i=values.length-period;
+    i<values.length;
+    i++
+  ){
     sum+=values[i];
   }
+
   return sum/period;
 }
 
 function emaSeries(values,period){
   if(values.length<period) return [];
 
-  const out=new Array(values.length).fill(null);
+  const out=
+    new Array(values.length).fill(null);
+
   let sum=0;
 
-  for(let i=0;i<period;i++) sum+=values[i];
+  for(let i=0;i<period;i++){
+    sum+=values[i];
+  }
 
   let prev=sum/period;
+
   out[period-1]=prev;
 
   const k=2/(period+1);
 
-  for(let i=period;i<values.length;i++){
-    prev=values[i]*k+prev*(1-k);
+  for(
+    let i=period;
+    i<values.length;
+    i++
+  ){
+    prev=
+      values[i]*k+
+      prev*(1-k);
+
     out[i]=prev;
   }
 
@@ -393,36 +564,65 @@ function emaSeries(values,period){
 
 function ema(values,period){
   const s=emaSeries(values,period);
-  return s.length ? s[s.length-1] : null;
+
+  return s.length
+    ? s[s.length-1]
+    : null;
 }
 
 function rsi(values,period=14){
-  if(values.length<period+1) return null;
+  if(values.length<period+1){
+    return null;
+  }
 
   let gain=0;
   let loss=0;
 
   for(let i=1;i<=period;i++){
-    const d=values[i]-values[i-1];
-    if(d>=0) gain+=d;
-    else loss-=d;
+    const d=
+      values[i]-
+      values[i-1];
+
+    if(d>=0){
+      gain+=d;
+    }else{
+      loss-=d;
+    }
   }
 
   gain/=period;
   loss/=period;
 
-  for(let i=period+1;i<values.length;i++){
-    const d=values[i]-values[i-1];
-    const g=d>0?d:0;
-    const l=d<0?-d:0;
+  for(
+    let i=period+1;
+    i<values.length;
+    i++
+  ){
 
-    gain=(gain*(period-1)+g)/period;
-    loss=(loss*(period-1)+l)/period;
+    const d=
+      values[i]-
+      values[i-1];
+
+    const g=d>0 ? d : 0;
+    const l=d<0 ? -d : 0;
+
+    gain=
+      (
+        gain*(period-1)+g
+      )/period;
+
+    loss=
+      (
+        loss*(period-1)+l
+      )/period;
   }
 
-  if(loss===0) return 100;
+  if(loss===0){
+    return 100;
+  }
 
   const rs=gain/loss;
+
   return 100-(100/(1+rs));
 }
 
@@ -437,27 +637,52 @@ function macd(values){
 
   const e12=emaSeries(values,12);
   const e26=emaSeries(values,26);
+
   const line=[];
 
-  for(let i=0;i<values.length;i++){
-    if(e12[i]!==null && e26[i]!==null){
-      line.push(e12[i]-e26[i]);
+  for(
+    let i=0;
+    i<values.length;
+    i++
+  ){
+
+    if(
+      e12[i]!==null &&
+      e26[i]!==null
+    ){
+      line.push(
+        e12[i]-e26[i]
+      );
     }
   }
 
-  const signalSeries=emaSeries(line,9);
+  const signalSeries=
+    emaSeries(line,9);
 
-  const m=line[line.length-1];
-  const s=signalSeries[signalSeries.length-1];
+  const m=
+    line[line.length-1];
+
+  const s=
+    signalSeries[
+      signalSeries.length-1
+    ];
 
   return {
     macd:m,
     signal:s,
-    histogram:m!==null && s!==null ? m-s : null
+    histogram:
+      m!==null &&
+      s!==null
+      ? m-s
+      : null
   };
 }
 
-function bollinger(values,period=20,mult=2){
+function bollinger(
+  values,
+  period=20,
+  mult=2
+){
   if(values.length<period){
     return {
       middle:null,
@@ -467,41 +692,67 @@ function bollinger(values,period=20,mult=2){
     };
   }
 
-  const middle=sma(values,period);
+  const middle=
+    sma(values,period);
 
   let sum=0;
 
-  for(let i=values.length-period;i<values.length;i++){
-    sum+=Math.pow(values[i]-middle,2);
+  for(
+    let i=values.length-period;
+    i<values.length;
+    i++
+  ){
+    sum+=
+      Math.pow(
+        values[i]-middle,
+        2
+      );
   }
 
-  const sd=Math.sqrt(sum/period);
+  const sd=
+    Math.sqrt(sum/period);
 
-  const upper=middle+mult*sd;
-  const lower=middle-mult*sd;
+  const upper=
+    middle+mult*sd;
+
+  const lower=
+    middle-mult*sd;
 
   return {
     middle,
     upper,
     lower,
-    width:middle!==0 ? ((upper-lower)/middle)*100 : null
+    width:
+      middle!==0
+      ? (
+          (upper-lower)/
+          middle
+        )*100
+      : null
   };
 }
 
 function atr(candles,period=14){
-  if(candles.length<period+1) return null;
+  if(candles.length<period+1){
+    return null;
+  }
 
   const tr=[];
 
   for(let i=1;i<candles.length;i++){
+
     const c=candles[i];
     const prev=candles[i-1];
 
     tr.push(
       Math.max(
         c.high-c.low,
-        Math.abs(c.high-prev.close),
-        Math.abs(c.low-prev.close)
+        Math.abs(
+          c.high-prev.close
+        ),
+        Math.abs(
+          c.low-prev.close
+        )
       )
     );
   }
@@ -510,28 +761,54 @@ function atr(candles,period=14){
 }
 
 function kdj(candles,period=9){
-  if(candles.length<period) {
-    return {k:null,d:null,j:null};
+  if(candles.length<period){
+    return {
+      k:null,
+      d:null,
+      j:null
+    };
   }
 
   let k=50;
   let d=50;
 
-  for(let i=period-1;i<candles.length;i++){
+  for(
+    let i=period-1;
+    i<candles.length;
+    i++
+  ){
+
     let high=-Infinity;
     let low=Infinity;
 
-    for(let j=i-period+1;j<=i;j++){
-      high=Math.max(high,candles[j].high);
-      low=Math.min(low,candles[j].low);
+    for(
+      let j=i-period+1;
+      j<=i;
+      j++
+    ){
+      high=
+        Math.max(
+          high,
+          candles[j].high
+        );
+
+      low=
+        Math.min(
+          low,
+          candles[j].low
+        );
     }
 
-    const close=candles[i].close;
+    const close=
+      candles[i].close;
 
     const rsv=
       high===low
       ? 50
-      : ((close-low)/(high-low))*100;
+      : (
+          (close-low)/
+          (high-low)
+        )*100;
 
     k=(2*k+rsv)/3;
     d=(2*d+k)/3;
@@ -544,28 +821,54 @@ function kdj(candles,period=9){
   };
 }
 
+/* =========================================================
+   指标
+   ========================================================= */
+
 function calculateIndicators(candles){
-  const closes=candles.map(x=>x.close);
 
-  const price=closes[closes.length-1];
+  const closes=
+    candles.map(x=>x.close);
 
-  const ema20=ema(closes,20);
-  const ema50=ema(closes,50);
-  const ema200=ema(closes,200);
+  const price=
+    closes[closes.length-1];
 
-  const rsi14=rsi(closes,14);
+  const ema20=
+    ema(closes,20);
 
-  const m=macd(closes);
+  const ema50=
+    ema(closes,50);
 
-  const kd=kdj(candles,9);
+  const ema200=
+    ema(closes,200);
 
-  const bb=bollinger(closes,20,2);
+  const rsi14=
+    rsi(closes,14);
 
-  const atr14=atr(candles,14);
+  const m=
+    macd(closes);
 
-  const volumes=candles.map(x=>x.volume);
-  const volume=volumes[volumes.length-1];
-  const volumeAverage=sma(volumes,20);
+  const kd=
+    kdj(candles,9);
+
+  const bb=
+    bollinger(
+      closes,
+      20,
+      2
+    );
+
+  const atr14=
+    atr(candles,14);
+
+  const volumes=
+    candles.map(x=>x.volume);
+
+  const volume=
+    volumes[volumes.length-1];
+
+  const volumeAverage=
+    sma(volumes,20);
 
   let trend="mixed";
 
@@ -574,58 +877,85 @@ function calculateIndicators(candles){
     ema50!==null &&
     ema200!==null
   ){
+
     if(
       price>ema20 &&
       ema20>ema50 &&
       ema50>ema200
     ){
       trend="strong_bullish";
+
     }else if(
       price<ema20 &&
       ema20<ema50 &&
       ema50<ema200
     ){
       trend="strong_bearish";
-    }else if(price>ema50){
+
+    }else if(
+      price>ema50
+    ){
       trend="bullish";
-    }else if(price<ema50){
+
+    }else if(
+      price<ema50
+    ){
       trend="bearish";
     }
   }
 
   return {
     price,
+
     ema20,
     ema50,
     ema200,
+
     rsi14,
+
     macd:m.macd,
     macdSignal:m.signal,
     macdHistogram:m.histogram,
+
     k:kd.k,
     d:kd.d,
     j:kd.j,
+
     bollMiddle:bb.middle,
     bollUpper:bb.upper,
     bollLower:bb.lower,
     bollWidth:bb.width,
+
     atr14,
+
     atrPercent:
       atr14!==null && price
-      ? (atr14/price)*100
+      ? (
+          atr14/price
+        )*100
       : null,
+
     volume,
     volumeAverage,
+
     volumeRatio:
-      volumeAverage && volumeAverage!==0
+      volumeAverage &&
+      volumeAverage!==0
       ? volume/volumeAverage
       : 0,
+
     trend
   };
 }
 
+/* =========================================================
+   Vote
+   ========================================================= */
+
 function calculateVote(ind){
+
   let score=0;
+
   const reasons=[];
 
   if(
@@ -634,49 +964,88 @@ function calculateVote(ind){
     ind.ema50!==null &&
     ind.ema200!==null
   ){
+
     if(
       ind.price>ind.ema20 &&
       ind.ema20>ind.ema50 &&
       ind.ema50>ind.ema200
     ){
+
       score+=3;
-      reasons.push("价格位于 EMA20/50/200 上方，均线多头排列");
+
+      reasons.push(
+        "价格位于 EMA20/50/200 上方，均线多头排列"
+      );
+
     }else if(
       ind.price<ind.ema20 &&
       ind.ema20<ind.ema50 &&
       ind.ema50<ind.ema200
     ){
+
       score-=3;
-      reasons.push("价格位于 EMA20/50/200 下方，均线空头排列");
+
+      reasons.push(
+        "价格位于 EMA20/50/200 下方，均线空头排列"
+      );
     }
 
-    if(ind.price>ind.ema50 && ind.ema20>ind.ema50){
+    if(
+      ind.price>ind.ema50 &&
+      ind.ema20>ind.ema50
+    ){
+
       score+=2;
-    }else if(ind.price<ind.ema50 && ind.ema20<ind.ema50){
+
+    }else if(
+      ind.price<ind.ema50 &&
+      ind.ema20<ind.ema50
+    ){
+
       score-=2;
     }
   }
 
   if(ind.rsi14!==null){
+
     if(ind.rsi14<30){
+
       score+=1;
+
       reasons.push(
-        "RSI14="+ind.rsi14.toFixed(1)+"，进入超卖区域"
+        "RSI14="+
+        ind.rsi14.toFixed(1)+
+        "，进入超卖区域"
       );
+
     }else if(ind.rsi14>70){
+
       score-=1;
+
       reasons.push(
-        "RSI14="+ind.rsi14.toFixed(1)+"，进入超买区域"
+        "RSI14="+
+        ind.rsi14.toFixed(1)+
+        "，进入超买区域"
       );
+
     }else if(ind.rsi14>=50){
+
       score+=1;
+
       reasons.push(
-        "RSI14="+ind.rsi14.toFixed(1)+"，动能偏强"
+        "RSI14="+
+        ind.rsi14.toFixed(1)+
+        "，动能偏强"
       );
+
     }else{
+
       score-=1;
+
       reasons.push(
-        "RSI14="+ind.rsi14.toFixed(1)+"，动能偏弱"
+        "RSI14="+
+        ind.rsi14.toFixed(1)+
+        "，动能偏弱"
       );
     }
   }
@@ -686,28 +1055,51 @@ function calculateVote(ind){
     ind.macdSignal!==null &&
     ind.macdHistogram!==null
   ){
+
     if(
       ind.macd>ind.macdSignal &&
       ind.macdHistogram>0
     ){
+
       score+=1;
-      reasons.push("MACD 位于信号线上方，动能偏多");
+
+      reasons.push(
+        "MACD 位于信号线上方，动能偏多"
+      );
+
     }else if(
       ind.macd<ind.macdSignal &&
       ind.macdHistogram<0
     ){
+
       score-=1;
-      reasons.push("MACD 位于信号线下方，动能偏空");
+
+      reasons.push(
+        "MACD 位于信号线下方，动能偏空"
+      );
     }
   }
 
-  if(ind.k!==null && ind.d!==null){
+  if(
+    ind.k!==null &&
+    ind.d!==null
+  ){
+
     if(ind.k>ind.d){
+
       score+=1;
-      reasons.push("KDJ K 线高于 D 线，短线动能偏多");
+
+      reasons.push(
+        "KDJ K 线高于 D 线，短线动能偏多"
+      );
+
     }else if(ind.k<ind.d){
+
       score-=1;
-      reasons.push("KDJ K 线低于 D 线，短线动能偏空");
+
+      reasons.push(
+        "KDJ K 线低于 D 线，短线动能偏空"
+      );
     }
   }
 
@@ -715,19 +1107,34 @@ function calculateVote(ind){
     ind.bollUpper!==null &&
     ind.bollLower!==null
   ){
-    if(ind.price>ind.bollUpper){
+
+    if(
+      ind.price>ind.bollUpper
+    ){
+
       score-=1;
-    }else if(ind.price<ind.bollLower){
+
+    }else if(
+      ind.price<ind.bollLower
+    ){
+
       score+=1;
     }
   }
 
-  score=Math.max(-7,Math.min(7,score));
+  score=
+    Math.max(
+      -7,
+      Math.min(7,score)
+    );
 
   let vote="NEUTRAL";
 
-  if(score>=2) vote="BULLISH";
-  else if(score<=-2) vote="BEARISH";
+  if(score>=2){
+    vote="BULLISH";
+  }else if(score<=-2){
+    vote="BEARISH";
+  }
 
   return {
     score,
@@ -736,21 +1143,46 @@ function calculateVote(ind){
   };
 }
 
-function calculateRisk(ind){
-  const atrPct=ind.atrPercent || 0;
-  const bw=ind.bollWidth || 0;
+/* =========================================================
+   Risk
+   ========================================================= */
 
-  if(atrPct>=1 || bw>=10) return "HIGH";
-  if(atrPct>=0.5 || bw>=5) return "MEDIUM";
+function calculateRisk(ind){
+
+  const atrPct=
+    ind.atrPercent || 0;
+
+  const bw=
+    ind.bollWidth || 0;
+
+  if(
+    atrPct>=1 ||
+    bw>=10
+  ){
+    return "HIGH";
+  }
+
+  if(
+    atrPct>=0.5 ||
+    bw>=5
+  ){
+    return "MEDIUM";
+  }
 
   return "LOW";
 }
 
+/* =========================================================
+   周期
+   ========================================================= */
+
 function intervalToKraken(interval){
+
   if(interval==="15m") return 15;
   if(interval==="1H") return 60;
   if(interval==="4H") return 240;
   if(interval==="1D") return 1440;
+
   return 60;
 }
 
@@ -758,102 +1190,289 @@ function intervalLabel(interval){
   return interval;
 }
 
+/* =========================================================
+   Kraken OHLC
+   加入：
+   1. 20 秒缓存
+   2. 同请求共享
+   3. 请求排队
+   4. 350ms 最小间隔
+   ========================================================= */
+
 async function fetchKraken(
   symbol,
   interval,
   limit=720,
   pairOverride=null
 ){
-  const pair=pairOverride || normalizeSymbol(symbol);
-  const krakenInterval=intervalToKraken(interval);
 
-  const url=
-    "https://api.kraken.com/0/public/OHLC?pair="+
-    encodeURIComponent(pair)+
-    "&interval="+
-    krakenInterval;
+  const pair=
+    pairOverride ||
+    normalizeSymbol(symbol);
 
-  const response=await fetch(url,{
-    headers:{
-      "User-Agent":"QuantVote-V2"
-    }
-  });
+  const krakenInterval=
+    intervalToKraken(interval);
 
-  if(!response.ok){
-    throw new Error("Kraken HTTP "+response.status);
+  const cacheKey=
+    pair+"|"+krakenInterval;
+
+  const now=Date.now();
+
+  const cached=
+    OHLC_CACHE.get(cacheKey);
+
+  if(
+    cached &&
+    now-cached.time<OHLC_CACHE_TTL
+  ){
+
+    return cached.rows.slice(-limit);
   }
 
-  const data=await response.json();
+  if(
+    OHLC_INFLIGHT.has(cacheKey)
+  ){
 
-  if(data.error && data.error.length){
-    throw new Error(data.error.join(", "));
+    const rows=
+      await OHLC_INFLIGHT.get(cacheKey);
+
+    return rows.slice(-limit);
   }
 
-  const result=data.result || {};
+  const promise=
+    queueKrakenRequest(
+      async ()=>{
 
-  const key=Object.keys(result).find(k=>k!=="last");
+        const url=
+          "https://api.kraken.com/0/public/OHLC?pair="+
+          encodeURIComponent(pair)+
+          "&interval="+
+          krakenInterval;
 
-  if(!key || !Array.isArray(result[key])){
-    throw new Error("Kraken 没有返回K线数据");
+        const response=
+          await fetch(url,{
+            headers:{
+              "User-Agent":
+                "QuantVote-V2"
+            }
+          });
+
+        if(!response.ok){
+          throw new Error(
+            "Kraken HTTP "+
+            response.status
+          );
+        }
+
+        const data=
+          await response.json();
+
+        if(
+          data.error &&
+          data.error.length
+        ){
+
+          throw new Error(
+            data.error.join(", ")
+          );
+        }
+
+        const result=
+          data.result || {};
+
+        const key=
+          Object.keys(result)
+            .find(
+              k=>k!=="last"
+            );
+
+        if(
+          !key ||
+          !Array.isArray(result[key])
+        ){
+
+          throw new Error(
+            "Kraken 没有返回K线数据"
+          );
+        }
+
+        const rows=
+          result[key].map(r=>({
+            time:Number(r[0]),
+            open:Number(r[1]),
+            high:Number(r[2]),
+            low:Number(r[3]),
+            close:Number(r[4]),
+            vwap:Number(r[5]),
+            volume:Number(r[6]),
+            count:Number(r[7])
+          }));
+
+        OHLC_CACHE.set(
+          cacheKey,
+          {
+            time:Date.now(),
+            rows
+          }
+        );
+
+        return rows;
+      }
+    );
+
+  OHLC_INFLIGHT.set(
+    cacheKey,
+    promise
+  );
+
+  try{
+
+    const rows=
+      await promise;
+
+    return rows.slice(-limit);
+
+  }finally{
+
+    OHLC_INFLIGHT.delete(
+      cacheKey
+    );
   }
-
-  const rows=result[key].slice(-limit);
-
-  return rows.map(r=>({
-    time:Number(r[0]),
-    open:Number(r[1]),
-    high:Number(r[2]),
-    low:Number(r[3]),
-    close:Number(r[4]),
-    vwap:Number(r[5]),
-    volume:Number(r[6]),
-    count:Number(r[7])
-  }));
 }
+
+/* =========================================================
+   Kraken AssetPairs
+   60 秒缓存 + 同请求共享
+   ========================================================= */
 
 async function fetchPairs(){
-  const url="https://api.kraken.com/0/public/AssetPairs";
 
-  const response=await fetch(url,{
-    headers:{
-      "User-Agent":"QuantVote-V2"
-    }
-  });
+  const now=Date.now();
 
-  if(!response.ok){
-    throw new Error("Kraken AssetPairs HTTP "+response.status);
+  if(
+    PAIRS_CACHE &&
+    now-PAIRS_CACHE_TIME<
+      PAIRS_CACHE_TTL
+  ){
+
+    return PAIRS_CACHE;
   }
 
-  const data=await response.json();
-
-  if(data.error && data.error.length){
-    throw new Error(data.error.join(", "));
+  if(PAIRS_INFLIGHT){
+    return await PAIRS_INFLIGHT;
   }
 
-  return data.result || {};
+  PAIRS_INFLIGHT=
+    queueKrakenRequest(
+      async ()=>{
+
+        const url=
+          "https://api.kraken.com/0/public/AssetPairs";
+
+        const response=
+          await fetch(url,{
+            headers:{
+              "User-Agent":
+                "QuantVote-V2"
+            }
+          });
+
+        if(!response.ok){
+
+          throw new Error(
+            "Kraken AssetPairs HTTP "+
+            response.status
+          );
+        }
+
+        const data=
+          await response.json();
+
+        if(
+          data.error &&
+          data.error.length
+        ){
+
+          throw new Error(
+            data.error.join(", ")
+          );
+        }
+
+        const result=
+          data.result || {};
+
+        PAIRS_CACHE=result;
+        PAIRS_CACHE_TIME=Date.now();
+
+        return result;
+      }
+    );
+
+  try{
+
+    return await PAIRS_INFLIGHT;
+
+  }finally{
+
+    PAIRS_INFLIGHT=null;
+
+  }
 }
 
-function pairBase(pair){
-  const p=String(pair||"").toUpperCase();
+/* =========================================================
+   Pair 解析
+   ========================================================= */
 
-  if(p.endsWith("XBT")) return p.slice(0,-3);
-  if(p.endsWith("BTC")) return p.slice(0,-3);
-  if(p.endsWith("USDT")) return p.slice(0,-4);
-  if(p.endsWith("USDC")) return p.slice(0,-4);
-  if(p.endsWith("USD")) return p.slice(0,-3);
-  if(p.endsWith("EUR")) return p.slice(0,-3);
-  if(p.endsWith("GBP")) return p.slice(0,-3);
-  if(p.endsWith("JPY")) return p.slice(0,-3);
-  if(p.endsWith("AUD")) return p.slice(0,-3);
-  if(p.endsWith("CAD")) return p.slice(0,-3);
-  if(p.endsWith("CHF")) return p.slice(0,-3);
-  if(p.endsWith("ETH")) return p.slice(0,-3);
+function pairBase(pair){
+
+  const p=
+    String(pair||"")
+      .toUpperCase();
+
+  if(p.endsWith("XBT"))
+    return p.slice(0,-3);
+
+  if(p.endsWith("BTC"))
+    return p.slice(0,-3);
+
+  if(p.endsWith("USDT"))
+    return p.slice(0,-4);
+
+  if(p.endsWith("USDC"))
+    return p.slice(0,-4);
+
+  if(p.endsWith("USD"))
+    return p.slice(0,-3);
+
+  if(p.endsWith("EUR"))
+    return p.slice(0,-3);
+
+  if(p.endsWith("GBP"))
+    return p.slice(0,-3);
+
+  if(p.endsWith("JPY"))
+    return p.slice(0,-3);
+
+  if(p.endsWith("AUD"))
+    return p.slice(0,-3);
+
+  if(p.endsWith("CAD"))
+    return p.slice(0,-3);
+
+  if(p.endsWith("CHF"))
+    return p.slice(0,-3);
+
+  if(p.endsWith("ETH"))
+    return p.slice(0,-3);
 
   return "";
 }
 
 function pairQuote(pair){
-  const p=String(pair||"").toUpperCase();
+
+  const p=
+    String(pair||"")
+      .toUpperCase();
 
   const quotes=[
     "USDT",
@@ -876,21 +1495,49 @@ function pairQuote(pair){
   ];
 
   for(const q of quotes){
-    if(p.endsWith(q)) return q;
+
+    if(p.endsWith(q)){
+      return q;
+    }
   }
 
   return "";
 }
 
-function scorePair(item,q){
-  const symbol=String(item.symbol||"").toUpperCase();
-  const pair=String(item.pair||"").toUpperCase();
-  const alt=String(item.altname||"").toUpperCase();
-  const ws=String(item.wsname||"").toUpperCase();
-  const query=String(q||"").toUpperCase().trim();
+/* =========================================================
+   Pair 搜索评分
+   ========================================================= */
 
-  const base=String(item.base||"").toUpperCase();
-  const quote=String(item.quote||"").toUpperCase();
+function scorePair(item,q){
+
+  const symbol=
+    String(item.symbol||"")
+      .toUpperCase();
+
+  const pair=
+    String(item.pair||"")
+      .toUpperCase();
+
+  const alt=
+    String(item.altname||"")
+      .toUpperCase();
+
+  const ws=
+    String(item.wsname||"")
+      .toUpperCase();
+
+  const query=
+    String(q||"")
+      .toUpperCase()
+      .trim();
+
+  const base=
+    String(item.base||"")
+      .toUpperCase();
+
+  const quote=
+    String(item.quote||"")
+      .toUpperCase();
 
   let score=0;
 
@@ -898,64 +1545,98 @@ function scorePair(item,q){
     base===query ||
     pairBase(pair)===query ||
     pairBase(alt)===query ||
-    pairBase(ws.replace("/",""))===query;
+    pairBase(
+      ws.replace("/","")
+    )===query;
 
   const exactSymbol=
     symbol===query ||
     alt===query ||
     ws.replace("/","")===query;
 
-  if(exactSymbol) score+=10000;
+  if(exactSymbol)
+    score+=10000;
 
-  if(exactBase) score+=8000;
+  if(exactBase)
+    score+=8000;
 
-  const isMajorQuote=[
-    "USD",
-    "USDT",
-    "USDC",
-    "EUR",
-    "GBP",
-    "JPY",
-    "AUD",
-    "CAD",
-    "CHF",
-    "XBT",
-    "BTC"
-  ].includes(quote) ||
-  [
-    "USD",
-    "USDT",
-    "USDC",
-    "EUR",
-    "GBP",
-    "JPY",
-    "AUD",
-    "CAD",
-    "CHF",
-    "XBT",
-    "BTC"
-  ].includes(pairQuote(pair));
+  const isMajorQuote=
+    [
+      "USD",
+      "USDT",
+      "USDC",
+      "EUR",
+      "GBP",
+      "JPY",
+      "AUD",
+      "CAD",
+      "CHF",
+      "XBT",
+      "BTC"
+    ].includes(quote)
+    ||
+    [
+      "USD",
+      "USDT",
+      "USDC",
+      "EUR",
+      "GBP",
+      "JPY",
+      "AUD",
+      "CAD",
+      "CHF",
+      "XBT",
+      "BTC"
+    ].includes(
+      pairQuote(pair)
+    );
 
-  if(exactBase && isMajorQuote) score+=5000;
+  if(
+    exactBase &&
+    isMajorQuote
+  ){
+    score+=5000;
+  }
 
-  if(exactBase && quote==="USD") score+=3000;
-  if(exactBase && quote==="USDT") score+=2900;
-  if(exactBase && quote==="USDC") score+=2800;
+  if(
+    exactBase &&
+    quote==="USD"
+  ){
+    score+=3000;
+  }
+
+  if(
+    exactBase &&
+    quote==="USDT"
+  ){
+    score+=2900;
+  }
+
+  if(
+    exactBase &&
+    quote==="USDC"
+  ){
+    score+=2800;
+  }
 
   if(
     symbol.startsWith(query) ||
     alt.startsWith(query) ||
-    ws.replace("/","").startsWith(query)
+    ws.replace("/","")
+      .startsWith(query)
   ){
     score+=1000;
   }
 
-  if(pair.includes(query)) score+=100;
+  if(pair.includes(query)){
+    score+=100;
+  }
 
   return score;
 }
 
 function displayPair(item){
+
   const pair=
     item.wsname ||
     item.altname ||
@@ -965,10 +1646,20 @@ function displayPair(item){
   return pair;
 }
 
+/* =========================================================
+   Pairs
+   ========================================================= */
+
 async function handlePairs(url){
-  const q=(url.searchParams.get("q") || "").trim();
+
+  const q=
+    (
+      url.searchParams.get("q") ||
+      ""
+    ).trim();
 
   if(!q){
+
     return json({
       status:"ok",
       source:"kraken",
@@ -978,19 +1669,38 @@ async function handlePairs(url){
     });
   }
 
-  const all=await fetchPairs();
+  const all=
+    await fetchPairs();
 
-  const query=q.toUpperCase();
+  const query=
+    q.toUpperCase();
 
   const list=[];
 
-  for(const [key,item] of Object.entries(all)){
-    const symbol=String(key||"").toUpperCase();
+  for(
+    const [key,item]
+    of Object.entries(all)
+  ){
 
-    const alt=String(item.altname||"").toUpperCase();
-    const ws=String(item.wsname||"").toUpperCase();
-    const base=String(item.base||"").toUpperCase();
-    const quote=String(item.quote||"").toUpperCase();
+    const symbol=
+      String(key||"")
+        .toUpperCase();
+
+    const alt=
+      String(item.altname||"")
+        .toUpperCase();
+
+    const ws=
+      String(item.wsname||"")
+        .toUpperCase();
+
+    const base=
+      String(item.base||"")
+        .toUpperCase();
+
+    const quote=
+      String(item.quote||"")
+        .toUpperCase();
 
     const text=
       symbol+" "+
@@ -999,39 +1709,76 @@ async function handlePairs(url){
       base+" "+
       quote;
 
-    if(!text.includes(query)) continue;
+    if(!text.includes(query)){
+      continue;
+    }
 
     list.push({
+
       symbol:key,
-      pair:item.altname || key,
-      display:displayPair(item),
-      altname:item.altname || "",
-      wsname:item.wsname || "",
-      base:item.base || "",
-      quote:item.quote || "",
-      _score:scorePair({
-        symbol:key,
-        pair:item.altname || key,
-        ...item
-      },q)
+
+      pair:
+        item.altname ||
+        key,
+
+      display:
+        displayPair(item),
+
+      altname:
+        item.altname ||
+        "",
+
+      wsname:
+        item.wsname ||
+        "",
+
+      base:
+        item.base ||
+        "",
+
+      quote:
+        item.quote ||
+        "",
+
+      _score:
+        scorePair(
+          {
+            symbol:key,
+            pair:
+              item.altname ||
+              key,
+            ...item
+          },
+          q
+        )
     });
   }
 
-  list.sort((a,b)=>{
-    if(b._score!==a._score){
-      return b._score-a._score;
+  list.sort(
+    (a,b)=>{
+
+      if(
+        b._score!==a._score
+      ){
+        return b._score-a._score;
+      }
+
+      return String(
+        a.display
+      ).localeCompare(
+        String(b.display)
+      );
     }
+  );
 
-    return String(a.display).localeCompare(
-      String(b.display)
-    );
-  });
-
-  const results=list.slice(0,50).map(x=>({
-    symbol:x.symbol,
-    pair:x.pair,
-    display:x.display
-  }));
+  const results=
+    list
+      .slice(0,50)
+      .map(x=>({
+        symbol:x.symbol,
+        pair:x.pair,
+        display:x.display
+      }));
 
   return json({
     status:"ok",
@@ -1042,22 +1789,34 @@ async function handlePairs(url){
   });
 }
 
+/* =========================================================
+   Market
+   ========================================================= */
+
 async function handleMarket(url){
-  const pair=url.searchParams.get("pair") || "XBTUSD";
 
-  const candles=await fetchKraken(
-    pair,
-    "1H",
-    10,
-    pair
-  );
+  const pair=
+    url.searchParams.get("pair") ||
+    "XBTUSD";
 
-  const last=candles[candles.length-1];
+  const candles=
+    await fetchKraken(
+      pair,
+      "1H",
+      10,
+      pair
+    );
+
+  const last=
+    candles[candles.length-1];
 
   return json({
     status:"ok",
     source:"kraken",
-    symbol:pair==="XBTUSD" ? "BTCUSD" : pair,
+    symbol:
+      pair==="XBTUSD"
+      ? "BTCUSD"
+      : pair,
     pair,
     interval:60,
     timestamp:last.time,
@@ -1065,47 +1824,79 @@ async function handleMarket(url){
   });
 }
 
+/* =========================================================
+   Indicators
+   ========================================================= */
+
 async function handleIndicators(url){
-  const pair=url.searchParams.get("pair") || "XBTUSD";
 
-  const candles=await fetchKraken(
-    pair,
-    "1H",
-    720,
-    pair
-  );
+  const pair=
+    url.searchParams.get("pair") ||
+    "XBTUSD";
 
-  const indicators=calculateIndicators(candles);
+  const candles=
+    await fetchKraken(
+      pair,
+      "1H",
+      720,
+      pair
+    );
+
+  const indicators=
+    calculateIndicators(candles);
 
   return json({
     status:"ok",
     source:"kraken",
-    symbol:pair==="XBTUSD" ? "BTCUSD" : pair,
+    symbol:
+      pair==="XBTUSD"
+      ? "BTCUSD"
+      : pair,
     pair,
     interval:60,
-    timestamp:candles[candles.length-1].time,
+    timestamp:
+      candles[
+        candles.length-1
+      ].time,
     indicators
   });
 }
 
+/* =========================================================
+   Vote
+   ========================================================= */
+
 async function handleVote(url){
-  const pair=url.searchParams.get("pair") || "XBTUSD";
 
-  const candles=await fetchKraken(
-    pair,
-    "1H",
-    720,
-    pair
-  );
+  const pair=
+    url.searchParams.get("pair") ||
+    "XBTUSD";
 
-  const indicators=calculateIndicators(candles);
-  const result=calculateVote(indicators);
-  const risk=calculateRisk(indicators);
+  const candles=
+    await fetchKraken(
+      pair,
+      "1H",
+      720,
+      pair
+    );
+
+  const indicators=
+    calculateIndicators(candles);
+
+  const result=
+    calculateVote(indicators);
+
+  const risk=
+    calculateRisk(indicators);
 
   if(indicators.volumeAverage){
+
     result.reasons.push(
       "成交量约为20周期均量的 "+
-      (indicators.volumeRatio || 0).toFixed(2)+
+      (
+        indicators.volumeRatio ||
+        0
+      ).toFixed(2)+
       " 倍，市场活动偏"+
       (
         indicators.volumeRatio<0.8
@@ -1120,7 +1911,10 @@ async function handleVote(url){
   return json({
     status:"ok",
     source:"kraken",
-    symbol:pair==="XBTUSD" ? "BTCUSD" : pair,
+    symbol:
+      pair==="XBTUSD"
+      ? "BTCUSD"
+      : pair,
     pair,
     interval:60,
     price:indicators.price,
@@ -1132,72 +1926,131 @@ async function handleVote(url){
   });
 }
 
-async function handleMulti(url){
-  const pair=url.searchParams.get("pair") || "XBTUSD";
+/* =========================================================
+   Multi
+   ========================================================= */
 
-  const intervals=["15m","1H","4H","1D"];
+async function handleMulti(url){
+
+  const pair=
+    url.searchParams.get("pair") ||
+    "XBTUSD";
+
+  const intervals=[
+    "15m",
+    "1H",
+    "4H",
+    "1D"
+  ];
 
   const result=[];
 
-  for(const interval of intervals){
-    const candles=await fetchKraken(
-      pair,
-      interval,
-      720,
-      pair
-    );
+  for(
+    const interval
+    of intervals
+  ){
 
-    const indicators=calculateIndicators(candles);
-    const vote=calculateVote(indicators);
+    const candles=
+      await fetchKraken(
+        pair,
+        interval,
+        720,
+        pair
+      );
+
+    const indicators=
+      calculateIndicators(candles);
+
+    const vote=
+      calculateVote(indicators);
 
     result.push({
+
       interval,
-      intervalLabel:interval,
-      price:indicators.price,
-      score:vote.score,
-      vote:vote.vote,
-      trend:indicators.trend,
-      rsi:indicators.rsi14
+
+      intervalLabel:
+        interval,
+
+      price:
+        indicators.price,
+
+      score:
+        vote.score,
+
+      vote:
+        vote.vote,
+
+      trend:
+        indicators.trend,
+
+      rsi:
+        indicators.rsi14
     });
   }
 
   return json({
     status:"ok",
     source:"kraken",
-    symbol:pair==="XBTUSD" ? "BTCUSD" : pair,
+    symbol:
+      pair==="XBTUSD"
+      ? "BTCUSD"
+      : pair,
     pair,
     timeframes:result
   });
 }
 
+/* =========================================================
+   Regime
+   ========================================================= */
+
 async function handleRegime(url){
-  const pair=url.searchParams.get("pair") || "XBTUSD";
 
-  const candles=await fetchKraken(
-    pair,
-    "1D",
-    720,
-    pair
-  );
+  const pair=
+    url.searchParams.get("pair") ||
+    "XBTUSD";
 
-  const ind=calculateIndicators(candles);
+  const candles=
+    await fetchKraken(
+      pair,
+      "1D",
+      720,
+      pair
+    );
+
+  const ind=
+    calculateIndicators(candles);
 
   let regime="RANGE";
 
-  if(ind.trend==="strong_bullish"){
+  if(
+    ind.trend==="strong_bullish"
+  ){
     regime="BULL";
-  }else if(ind.trend==="strong_bearish"){
+
+  }else if(
+    ind.trend==="strong_bearish"
+  ){
     regime="BEAR";
-  }else if(ind.trend==="bullish"){
+
+  }else if(
+    ind.trend==="bullish"
+  ){
     regime="BULLISH_BIAS";
-  }else if(ind.trend==="bearish"){
+
+  }else if(
+    ind.trend==="bearish"
+  ){
     regime="BEARISH_BIAS";
   }
 
   return json({
     status:"ok",
     source:"kraken",
-    symbol:pair==="XBTUSD" ? "BTCUSD" : pair,
+    symbol:
+      pair==="XBTUSD"
+      ? "BTCUSD"
+      : pair,
     pair,
     regime,
     trend:ind.trend,
@@ -1206,8 +2059,14 @@ async function handleRegime(url){
   });
 }
 
+/* =========================================================
+   Backtest
+   ========================================================= */
+
 function runBacktest(candles){
+
   if(candles.length<220){
+
     return {
       trades:0,
       winRate:0,
@@ -1231,34 +2090,78 @@ function runBacktest(candles){
   const wins=[];
   const losses=[];
 
-  for(let i=200;i<candles.length;i++){
-    const slice=candles.slice(0,i+1);
-    const ind=calculateIndicators(slice);
-    const vote=calculateVote(ind);
+  for(
+    let i=200;
+    i<candles.length;
+    i++
+  ){
 
-    const price=candles[i].close;
+    const slice=
+      candles.slice(
+        0,
+        i+1
+      );
 
-    if(!inPosition && vote.score>=3){
+    const ind=
+      calculateIndicators(slice);
+
+    const vote=
+      calculateVote(ind);
+
+    const price=
+      candles[i].close;
+
+    if(
+      !inPosition &&
+      vote.score>=3
+    ){
+
       inPosition=true;
       entry=price;
+
       continue;
     }
 
-    if(inPosition && vote.score<=0){
-      const ret=(price-entry)-Math.abs(price-entry)*0.001;
-      const pct=ret/entry;
+    if(
+      inPosition &&
+      vote.score<=0
+    ){
 
-      equity*=1+pct;
+      const ret=
+        (price-entry)-
+        Math.abs(
+          price-entry
+        )*0.001;
+
+      const pct=
+        ret/entry;
+
+      equity*=
+        1+pct;
 
       returns.push(pct);
 
-      if(pct>0) wins.push(pct);
-      else losses.push(pct);
+      if(pct>0){
+        wins.push(pct);
+      }else{
+        losses.push(pct);
+      }
 
-      peak=Math.max(peak,equity);
+      peak=
+        Math.max(
+          peak,
+          equity
+        );
 
-      const dd=(peak-equity)/peak;
-      maxDD=Math.max(maxDD,dd);
+      const dd=
+        (peak-equity)/
+        peak;
+
+      maxDD=
+        Math.max(
+          maxDD,
+          dd
+        );
 
       inPosition=false;
       entry=0;
@@ -1266,23 +2169,51 @@ function runBacktest(candles){
   }
 
   if(inPosition){
-    const price=candles[candles.length-1].close;
-    const ret=(price-entry)-Math.abs(price-entry)*0.001;
-    const pct=ret/entry;
 
-    equity*=1+pct;
+    const price=
+      candles[
+        candles.length-1
+      ].close;
+
+    const ret=
+      (price-entry)-
+      Math.abs(
+        price-entry
+      )*0.001;
+
+    const pct=
+      ret/entry;
+
+    equity*=
+      1+pct;
+
     returns.push(pct);
 
-    if(pct>0) wins.push(pct);
-    else losses.push(pct);
+    if(pct>0){
+      wins.push(pct);
+    }else{
+      losses.push(pct);
+    }
 
-    peak=Math.max(peak,equity);
+    peak=
+      Math.max(
+        peak,
+        equity
+      );
 
-    const dd=(peak-equity)/peak;
-    maxDD=Math.max(maxDD,dd);
+    const dd=
+      (peak-equity)/
+      peak;
+
+    maxDD=
+      Math.max(
+        maxDD,
+        dd
+      );
   }
 
-  const n=returns.length;
+  const n=
+    returns.length;
 
   const winRate=
     n
@@ -1291,20 +2222,30 @@ function runBacktest(candles){
 
   const avg=
     n
-    ? returns.reduce((a,b)=>a+b,0)/n
+    ? returns.reduce(
+        (a,b)=>a+b,
+        0
+      )/n
     : 0;
 
   let variance=0;
 
   if(n>1){
+
     variance=
       returns.reduce(
-        (s,x)=>s+Math.pow(x-avg,2),
+        (s,x)=>
+          s+
+          Math.pow(
+            x-avg,
+            2
+          ),
         0
       )/(n-1);
   }
 
-  const sd=Math.sqrt(variance);
+  const sd=
+    Math.sqrt(variance);
 
   const sharpe=
     sd
@@ -1312,11 +2253,17 @@ function runBacktest(candles){
     : 0;
 
   const grossProfit=
-    wins.reduce((a,b)=>a+b,0);
+    wins.reduce(
+      (a,b)=>a+b,
+      0
+    );
 
   const grossLoss=
     Math.abs(
-      losses.reduce((a,b)=>a+b,0)
+      losses.reduce(
+        (a,b)=>a+b,
+        0
+      )
     );
 
   const profitFactor=
@@ -1327,7 +2274,8 @@ function runBacktest(candles){
   return {
     trades:n,
     winRate,
-    cumulativeReturn:equity-1,
+    cumulativeReturn:
+      equity-1,
     maxDrawdown:maxDD,
     sharpe,
     profitFactor,
@@ -1337,59 +2285,90 @@ function runBacktest(candles){
 }
 
 async function handleBacktest(url){
-  const pair=url.searchParams.get("pair") || "XBTUSD";
 
-  const candles=await fetchKraken(
-    pair,
-    "1H",
-    720,
-    pair
-  );
+  const pair=
+    url.searchParams.get("pair") ||
+    "XBTUSD";
 
-  const result=runBacktest(candles);
+  const candles=
+    await fetchKraken(
+      pair,
+      "1H",
+      720,
+      pair
+    );
+
+  const result=
+    runBacktest(candles);
 
   return json({
     status:"ok",
     source:"kraken",
-    symbol:pair==="XBTUSD" ? "BTCUSD" : pair,
+    symbol:
+      pair==="XBTUSD"
+      ? "BTCUSD"
+      : pair,
     pair,
     interval:"1H",
-    method:"baseline_rule_backtest",
+    method:
+      "baseline_rule_backtest",
     fee:0.001,
     ...result
   });
 }
 
+/* =========================================================
+   Request
+   ========================================================= */
+
 async function handleRequest(request){
-  const url=new URL(request.url);
+
+  const url=
+    new URL(request.url);
 
   if(request.method==="OPTIONS"){
-    return new Response(null,{
-      status:204,
-      headers:CORS_HEADERS
-    });
+
+    return new Response(
+      null,
+      {
+        status:204,
+        headers:CORS_HEADERS
+      }
+    );
   }
 
   if(request.method!=="GET"){
-    return json({
-      status:"error",
-      error:"Method Not Allowed"
-    },405);
+
+    return json(
+      {
+        status:"error",
+        error:"Method Not Allowed"
+      },
+      405
+    );
   }
 
-  const path=url.pathname;
+  const path=
+    url.pathname;
 
   try{
+
     if(path==="/"){
-      return new Response(HTML,{
-        headers:{
-          ...CORS_HEADERS,
-          "Content-Type":"text/html;charset=UTF-8"
+
+      return new Response(
+        HTML,
+        {
+          headers:{
+            ...CORS_HEADERS,
+            "Content-Type":
+              "text/html;charset=UTF-8"
+          }
         }
-      });
+      );
     }
 
     if(path==="/api/health"){
+
       return json({
         status:"ok",
         service:"QuantVote",
@@ -1436,18 +2415,26 @@ async function handleRequest(request){
       return await handleBacktest(url);
     }
 
-    return json({
-      status:"error",
-      error:"Not Found"
-    },404);
+    return json(
+      {
+        status:"error",
+        error:"Not Found"
+      },
+      404
+    );
 
   }catch(error){
-    return json({
-      status:"error",
-      error:error instanceof Error
-        ? error.message
-        : String(error)
-    },500);
+
+    return json(
+      {
+        status:"error",
+        error:
+          error instanceof Error
+          ? error.message
+          : String(error)
+      },
+      500
+    );
   }
 }
 
