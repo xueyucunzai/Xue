@@ -1,595 +1,424 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QuantVote V2</title>
 
-  <title>QuantVote V2</title>
+<style>
+* {
+  box-sizing: border-box;
+}
 
-  <script>
-    window.QV_API = "https://xue.xilongy41-8bd.workers.dev";
-  </script>
+body {
+  margin: 0;
+  background: #0f1117;
+  color: #e8ecf1;
+  font-family: Arial, sans-serif;
+}
 
-  <link rel="stylesheet" href="style.css">
+main {
+  max-width: 1000px;
+  margin: auto;
+  padding: 20px;
+}
 
-  <style>
-    * {
-      box-sizing: border-box;
-    }
+h1 {
+  margin-bottom: 5px;
+}
 
-    body {
-      margin: 0;
-      font-family:
-        -apple-system,
-        BlinkMacSystemFont,
-        "Segoe UI",
-        "PingFang SC",
-        "Microsoft YaHei",
-        sans-serif;
-      background: #0b0f14;
-      color: #e8edf3;
-    }
+h2 {
+  margin-top: 0;
+}
 
-    main {
-      width: min(1180px, calc(100% - 24px));
-      margin: 0 auto;
-      padding: 20px 0 50px;
-    }
+.sub {
+  color: #9aa4b2;
+  margin-bottom: 18px;
+}
 
-    header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 16px;
-      padding: 10px 0 24px;
-    }
+button {
+  border: 0;
+  border-radius: 9px;
+  padding: 10px 16px;
+  background: #2d6cdf;
+  color: white;
+  font-weight: bold;
+}
 
-    h1 {
-      margin: 0;
-      font-size: 30px;
-    }
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+  margin: 15px 0;
+}
 
-    .sub {
-      margin-top: 6px;
-      color: #8d99a8;
-      font-size: 14px;
-    }
+.card {
+  background: #181c24;
+  border: 1px solid #2a303b;
+  border-radius: 14px;
+  padding: 16px;
+  margin-bottom: 12px;
+}
 
-    #status {
-      padding: 7px 12px;
-      border-radius: 999px;
-      background: #18212b;
-      color: #9fb0c0;
-      font-size: 13px;
-      white-space: nowrap;
-    }
+.label {
+  color: #9aa4b2;
+  font-size: 13px;
+}
 
-    .hero {
-      display: grid;
-      grid-template-columns: 1.5fr 1fr;
-      gap: 16px;
-      margin-bottom: 16px;
-    }
+.big {
+  font-size: 28px;
+  font-weight: bold;
+  margin-top: 6px;
+}
 
-    .panel {
-      background: #111820;
-      border: 1px solid #202b36;
-      border-radius: 16px;
-      padding: 20px;
-    }
+.muted {
+  color: #9aa4b2;
+}
 
-    .label {
-      color: #8491a0;
-      font-size: 13px;
-      margin-bottom: 8px;
-    }
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
 
-    .price {
-      font-size: 38px;
-      font-weight: 700;
-      letter-spacing: -1px;
-    }
+th,
+td {
+  padding: 9px;
+  border-bottom: 1px solid #2a303b;
+  text-align: left;
+}
 
-    .vote {
-      font-size: 28px;
-      font-weight: 700;
-      margin-bottom: 10px;
-    }
+.indicator {
+  display: inline-block;
+  min-width: 170px;
+  padding: 7px 0;
+}
 
-    .score {
-      font-size: 18px;
-      color: #b6c1cc;
-    }
-
-    .meta {
-      margin-top: 10px;
-      color: #7e8b99;
-      font-size: 12px;
-    }
-
-    .grid {
-      display: grid;
-      grid-template-columns:
-        repeat(auto-fit, minmax(180px, 1fr));
-      gap: 14px;
-    }
-
-    .card {
-      background: #111820;
-      border: 1px solid #202b36;
-      border-radius: 14px;
-      padding: 16px;
-    }
-
-    .card-title {
-      color: #8d99a8;
-      font-size: 13px;
-      margin-bottom: 10px;
-    }
-
-    .card-value {
-      font-size: 20px;
-      font-weight: 650;
-    }
-
-    section {
-      margin-top: 16px;
-    }
-
-    section > .section-title {
-      font-size: 19px;
-      font-weight: 700;
-      margin-bottom: 12px;
-    }
-
-    .indicator-grid {
-      display: grid;
-      grid-template-columns:
-        repeat(auto-fit, minmax(145px, 1fr));
-      gap: 10px;
-    }
-
-    .indicator {
-      background: #0d141b;
-      border: 1px solid #1d2833;
-      border-radius: 11px;
-      padding: 12px;
-    }
-
-    .indicator span {
-      display: block;
-      color: #7f8b98;
-      font-size: 12px;
-      margin-bottom: 6px;
-    }
-
-    .indicator strong {
-      display: block;
-      font-size: 15px;
-    }
-
-    .timeframe-grid {
-      display: grid;
-      grid-template-columns:
-        repeat(auto-fit, minmax(210px, 1fr));
-      gap: 12px;
-    }
-
-    .timeframe {
-      background: #111820;
-      border: 1px solid #202b36;
-      border-radius: 14px;
-      padding: 16px;
-    }
-
-    .timeframe-head {
-      display: flex;
-      justify-content: space-between;
-      gap: 10px;
-      margin-bottom: 12px;
-    }
-
-    .timeframe-name {
-      font-size: 16px;
-      font-weight: 700;
-    }
-
-    .timeframe-vote {
-      font-size: 13px;
-    }
-
-    .timeframe-price {
-      font-size: 24px;
-      font-weight: 700;
-      margin-bottom: 8px;
-    }
-
-    .timeframe-score {
-      color: #b7c1cc;
-      margin-bottom: 12px;
-    }
-
-    .tags {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-    }
-
-    .tag {
-      padding: 5px 8px;
-      border-radius: 7px;
-      background: #18212b;
-      color: #aeb9c5;
-      font-size: 11px;
-    }
-
-    .reasons {
-      margin: 0;
-      padding-left: 20px;
-    }
-
-    .reasons li {
-      margin: 9px 0;
-      line-height: 1.5;
-      color: #c7d0da;
-    }
-
-    .risk-grid {
-      display: grid;
-      grid-template-columns:
-        repeat(auto-fit, minmax(160px, 1fr));
-      gap: 10px;
-    }
-
-    .risk-box {
-      background: #0d141b;
-      border: 1px solid #1d2833;
-      border-radius: 11px;
-      padding: 13px;
-    }
-
-    .risk-box span {
-      display: block;
-      color: #7f8b98;
-      font-size: 12px;
-      margin-bottom: 6px;
-    }
-
-    .risk-box strong {
-      font-size: 16px;
-    }
-
-    .method {
-      color: #9ca8b4;
-      line-height: 1.7;
-      font-size: 13px;
-    }
-
-    .method strong {
-      color: #dbe2e9;
-    }
-
-    .note {
-      margin-top: 10px;
-      color: #727f8d;
-      font-size: 12px;
-      line-height: 1.6;
-    }
-
-    .error {
-      padding: 14px;
-      border-radius: 10px;
-      background: #241518;
-      border: 1px solid #4b252b;
-      color: #ff9b9b;
-      line-height: 1.6;
-    }
-
-    .loading {
-      color: #8793a0;
-      padding: 10px 0;
-    }
-
-    button {
-      border: 0;
-      border-radius: 9px;
-      padding: 9px 14px;
-      background: #243140;
-      color: #e9eef4;
-      cursor: pointer;
-      font-size: 13px;
-    }
-
-    button:hover {
-      background: #304052;
-    }
-
-    .toolbar {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 16px;
-    }
-
-    .toolbar-left {
-      color: #8491a0;
-      font-size: 13px;
-    }
-
-    .footer {
-      margin-top: 28px;
-      padding-top: 18px;
-      border-top: 1px solid #1b252e;
-      color: #65717d;
-      font-size: 12px;
-      line-height: 1.7;
-    }
-
-    @media (max-width: 700px) {
-      main {
-        width: min(100% - 16px, 1180px);
-        padding-top: 12px;
-      }
-
-      header {
-        align-items: center;
-      }
-
-      h1 {
-        font-size: 25px;
-      }
-
-      .hero {
-        grid-template-columns: 1fr;
-      }
-
-      .price {
-        font-size: 32px;
-      }
-
-      .vote {
-        font-size: 24px;
-      }
-    }
-  </style>
+li {
+  margin: 7px 0;
+}
+</style>
 </head>
 
 <body>
 
 <main>
 
-  <header>
-    <div>
-      <h1>QuantVote</h1>
-      <div class="sub">
-        Worker Native Technical Core · 多周期量化研究
-      </div>
-    </div>
+<h1>QuantVote V2</h1>
 
-    <span id="status">连接中…</span>
-  </header>
+<div class="sub">
+Technical Research Dashboard · Kraken Public Data
+</div>
 
-  <div class="toolbar">
-    <div class="toolbar-left">
-      BTC / USD · Kraken Public API
-    </div>
+<div style="margin-bottom:15px;">
+  <button id="refresh">刷新数据</button>
+  <span id="status" class="muted"></span>
+</div>
 
-    <button id="refreshBtn">
-      刷新
-    </button>
+<div class="grid">
+
+  <div class="card">
+    <div class="label">BTC 价格</div>
+    <div id="price" class="big">—</div>
   </div>
 
-  <div id="error"></div>
-
-  <div class="hero">
-
-    <div class="panel">
-
-      <div class="label">
-        BTC 当前价格
-      </div>
-
-      <div
-        class="price"
-        id="price"
-      >
-        --
-      </div>
-
-      <div
-        class="meta"
-        id="updateTime"
-      >
-        等待数据…
-      </div>
-
-    </div>
-
-    <div class="panel">
-
-      <div class="label">
-        1H QuantVote
-      </div>
-
-      <div
-        class="vote"
-        id="vote"
-      >
-        --
-      </div>
-
-      <div
-        class="score"
-        id="score"
-      >
-        Score: --
-      </div>
-
-      <div
-        class="meta"
-        id="risk"
-      >
-        风险：--
-      </div>
-
-    </div>
-
+  <div class="card">
+    <div class="label">1H QuantVote</div>
+    <div id="vote" class="big">—</div>
   </div>
 
-  <section>
-
-    <div class="section-title">
-      多周期综合
-    </div>
-
-    <div
-      id="multiTimeframe"
-      class="timeframe-grid"
-    >
-      <div class="loading">
-        正在读取 15m / 1H / 4H / 1D…
-      </div>
-    </div>
-
-  </section>
-
-  <section>
-
-    <div class="section-title">
-      技术指标 · 1H
-    </div>
-
-    <div
-      id="indicators"
-      class="indicator-grid"
-    >
-      <div class="loading">
-        正在计算指标…
-      </div>
-    </div>
-
-  </section>
-
-  <section>
-
-    <div class="section-title">
-      QuantVote 判断依据
-    </div>
-
-    <div class="panel">
-
-      <ul
-        id="reasons"
-        class="reasons"
-      >
-        <li>等待数据…</li>
-      </ul>
-
-    </div>
-
-  </section>
-
-  <section>
-
-    <div class="section-title">
-      风险分析
-    </div>
-
-    <div
-      id="riskPanel"
-      class="risk-grid"
-    >
-      <div class="risk-box">
-        <span>风险等级</span>
-        <strong>--</strong>
-      </div>
-
-      <div class="risk-box">
-        <span>ATR%</span>
-        <strong>--</strong>
-      </div>
-
-      <div class="risk-box">
-        <span>布林带宽度</span>
-        <strong>--</strong>
-      </div>
-
-      <div class="risk-box">
-        <span>风险分数</span>
-        <strong>--</strong>
-      </div>
-    </div>
-
-  </section>
-
-  <section>
-
-    <div class="section-title">
-      基础回测
-    </div>
-
-    <div
-      id="backtest"
-      class="panel"
-    >
-      <div class="loading">
-        回测模块将在需要时计算。
-      </div>
-    </div>
-
-  </section>
-
-  <section>
-
-    <div class="section-title">
-      QuantVote 方法说明
-    </div>
-
-    <div
-      id="methodology"
-      class="panel method"
-    >
-
-      <div>
-        <strong>
-          QuantVote Technical Core V2
-        </strong>
-      </div>
-
-      <div>
-        EMA + RSI + MACD + KDJ + Bollinger + Volume
-      </div>
-
-      <div class="note">
-        当前版本使用 Cloudflare Worker 在服务端计算技术指标。
-        市场数据来自 Kraken Public API。
-        规则分数用于研究和训练，不代表未来价格预测。
-      </div>
-
-    </div>
-
-  </section>
-
-  <div class="footer">
-
-    <div>
-      QuantVote V2 · Worker Native Technical Core
-    </div>
-
-    <div>
-      Data Source: Kraken Public API
-    </div>
-
-    <div>
-      本工具用于学习、研究和历史分析，不构成投资建议。
-    </div>
-
+  <div class="card">
+    <div class="label">1H Score</div>
+    <div id="score" class="big">—</div>
   </div>
+
+  <div class="card">
+    <div class="label">风险</div>
+    <div id="risk" class="big">—</div>
+  </div>
+
+</div>
+
+<div class="card">
+
+<h2>多周期</h2>
+
+<table>
+
+<thead>
+<tr>
+<th>周期</th>
+<th>价格</th>
+<th>Score</th>
+<th>Vote</th>
+<th>Trend</th>
+<th>RSI</th>
+</tr>
+</thead>
+
+<tbody id="multi">
+
+<tr>
+<td colspan="6">加载中…</td>
+</tr>
+
+</tbody>
+
+</table>
+
+</div>
+
+<div class="card">
+
+<h2>1H 指标</h2>
+
+<div id="indicators">
+加载中…
+</div>
+
+</div>
+
+<div class="card">
+
+<h2>1H 判断依据</h2>
+
+<ul id="reasons">
+
+<li>加载中…</li>
+
+</ul>
+
+</div>
+
+<div class="card">
+
+<h2>方法说明</h2>
+
+<p class="muted">
+QuantVote Technical Core V2：
+EMA + RSI + MACD + KDJ + Bollinger + Volume。
+这是规则化技术分析研究分数，不是价格预测，也不是投资建议。
+</p>
+
+</div>
 
 </main>
 
-<script src="app.js"></script>
+<script>
+
+const API =
+  "https://xue.xilongy41-8bd.workers.dev";
+
+const $ = (id) =>
+  document.getElementById(id);
+
+function fmt(value, digits = 2) {
+
+  if (
+    value === null ||
+    value === undefined ||
+    !Number.isFinite(Number(value))
+  ) {
+    return "—";
+  }
+
+  return Number(value).toFixed(digits);
+}
+
+async function getAPI(path) {
+
+  const response =
+    await fetch(API + path);
+
+  if (!response.ok) {
+
+    throw new Error(
+      "HTTP " + response.status
+    );
+
+  }
+
+  return response.json();
+}
+
+async function loadData() {
+
+  $("status").textContent =
+    "正在加载…";
+
+  try {
+
+    const [voteData, multiData] =
+      await Promise.all([
+
+        getAPI(
+          "/api/vote?symbol=BTCUSD&interval=60"
+        ),
+
+        getAPI(
+          "/api/multi?symbol=BTCUSD"
+        )
+
+      ]);
+
+    const indicators =
+      voteData.indicators || {};
+
+    $("price").textContent =
+      fmt(voteData.price);
+
+    $("vote").textContent =
+      (voteData.vote || "—")
+        .toUpperCase();
+
+    $("score").textContent =
+      (voteData.score ?? "—") +
+      " / " +
+      (voteData.maxScore ?? 7);
+
+    $("risk").textContent =
+      (voteData.risk || "—")
+        .toUpperCase();
+
+    const indicatorList = [
+
+      ["EMA20", indicators.ema20],
+
+      ["EMA50", indicators.ema50],
+
+      ["EMA200", indicators.ema200],
+
+      ["RSI14", indicators.rsi14],
+
+      ["MACD", indicators.macd],
+
+      ["MACD Signal", indicators.macdSignal],
+
+      ["K", indicators.k],
+
+      ["D", indicators.d],
+
+      ["J", indicators.j],
+
+      ["Boll Middle",
+       indicators.bollMiddle],
+
+      ["Boll Upper",
+       indicators.bollUpper],
+
+      ["Boll Lower",
+       indicators.bollLower],
+
+      ["ATR14",
+       indicators.atr14],
+
+      ["ATR %",
+       indicators.atrPercent],
+
+      ["Volume Ratio",
+       indicators.volumeRatio]
+
+    ];
+
+    $("indicators").innerHTML =
+      indicatorList
+        .map(item =>
+
+          `<span class="indicator">
+            <span class="muted">
+              ${item[0]}：
+            </span>
+            <b>
+              ${fmt(item[1])}
+            </b>
+          </span>`
+
+        )
+        .join("");
+
+    $("reasons").innerHTML =
+      (voteData.reasons || [])
+        .map(reason =>
+          `<li>${reason}</li>`
+        )
+        .join("");
+
+    if (
+      !voteData.reasons ||
+      voteData.reasons.length === 0
+    ) {
+
+      $("reasons").innerHTML =
+        "<li>暂无数据</li>";
+
+    }
+
+    $("multi").innerHTML =
+      (multiData.timeframes || [])
+        .map(item => {
+
+          const i =
+            item.indicators || {};
+
+          return `
+            <tr>
+
+              <td>
+                ${item.timeframe}
+              </td>
+
+              <td>
+                ${fmt(item.price)}
+              </td>
+
+              <td>
+                ${item.score ?? "—"}
+              </td>
+
+              <td>
+                ${item.vote ?? "—"}
+              </td>
+
+              <td>
+                ${i.trend ?? "—"}
+              </td>
+
+              <td>
+                ${fmt(i.rsi14)}
+              </td>
+
+            </tr>
+          `;
+
+        })
+        .join("");
+
+    $("status").textContent =
+      "更新：" +
+      new Date().toLocaleString();
+
+  } catch (error) {
+
+    $("status").textContent =
+      "加载失败：" +
+      error.message;
+
+  }
+
+}
+
+$("refresh").addEventListener(
+  "click",
+  loadData
+);
+
+loadData();
+
+setInterval(
+  loadData,
+  60000
+);
+
+</script>
 
 </body>
 </html>
