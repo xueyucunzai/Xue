@@ -7,7 +7,7 @@ export default {
       return json({
         status: "ok",
         service: "quantvote",
-        version: "cloudflare-v1"
+        version: "cloudflare-v2"
       });
     }
 
@@ -16,36 +16,22 @@ export default {
       return json({
         status: "ok",
         service: "quantvote",
-        version: "cloudflare-v1",
-        data_source: "binance-public-api"
+        version: "cloudflare-v2",
+        data_source: "coingecko-public-api"
       });
     }
 
-    // Binance 行情
+    // BTC 行情测试
     if (url.pathname === "/api/market") {
-      const symbol =
-        (url.searchParams.get("symbol") || "BTCUSDT").toUpperCase();
-
-      const interval =
-        url.searchParams.get("interval") || "1h";
-
-      const limit = Math.min(
-        Number(url.searchParams.get("limit") || 100),
-        1000
-      );
-
-      const binanceUrl =
-        "https://api.binance.com/api/v3/klines" +
-        "?symbol=" + encodeURIComponent(symbol) +
-        "&interval=" + encodeURIComponent(interval) +
-        "&limit=" + limit;
-
       try {
-        const response = await fetch(binanceUrl, {
-          headers: {
-            "User-Agent": "QuantVote-Cloudflare"
+        const response = await fetch(
+          "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
+          {
+            headers: {
+              "User-Agent": "QuantVote-Cloudflare"
+            }
           }
-        });
+        );
 
         const data = await response.text();
 
