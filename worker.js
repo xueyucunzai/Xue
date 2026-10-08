@@ -1,4 +1,4 @@
-CORS_HEADERS = {
+const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
@@ -45,7 +45,7 @@ function errorResponse(error, status = 500) {
 }
 
 function normalizeSymbol(value) {
-  let s = String(value || "XBTUSD").toUpperCase().replace(/[\\s/_-]/g, "");
+  let s = String(value || "XBTUSD").toUpperCase().replace(/[\s/_-]/g, "");
   if (s === "BTCUSD") s = "XBTUSD";
   if (s === "BTCUSDT") s = "XBTUSDT";
   return s;
@@ -131,6 +131,30 @@ function aggregate8H(rows) {
     }));
 }
 
+function aggregate1W(rows) {
+  const buckets = new Map();
+  for (const r of rows) {
+    const date = new Date(r.time * 1000);
+    const day = date.getUTCDay();
+    const mondayOffset = day === 0 ? 6 : day - 1;
+    const monday = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() - mondayOffset));
+    const bucket = Math.floor(monday.getTime() / 1000);
+    let a = buckets.get(bucket);
+    if (!a) {
+      a = { time: bucket, open: r.open, high: r.high, low: r.low, close: r.close, vwapValue: r.vwap * r.volume, volume: r.volume, count: r.count };
+      buckets.set(bucket, a);
+    } else {
+      a.high = Math.max(a.high, r.high);
+      a.low = Math.min(a.low, r.low);
+      a.close = r.close;
+      a.vwapValue += r.vwap * r.volume;
+      a.volume += r.volume;
+      a.count += r.count;
+    }
+  }
+  return [...buckets.values()].sort((a,b)=>a.time-b.time).map(r=>({time:r.time,open:r.open,high:r.high,low:r.low,close:r.close,vwap:r.volume?r.vwapValue/r.volume:r.close,volume:r.volume,count:r.count}));
+}
+
 async function fetchKraken(symbol, interval, limit = 720) {
   const pair = normalizeSymbol(symbol);
 
@@ -141,10 +165,15 @@ async function fetchKraken(symbol, interval, limit = 720) {
 
   const krakenInterval = intervalToKraken(interval);
   const cacheKey = pair + "|" + krakenInterval;
+
+  if (interval === "1W") {
+    const daily = await fetchKraken(pair, "1D", Math.max(limit * 7 + 7, 720));
+    return aggregate1W(daily).slice(-limit);
+  }
   const now = Date.now();
   const cached = OHLC_CACHE.get(cacheKey);
 
-  if (cached && now - cached.time \< OHLC_CACHE_TTL) {
+  if (cached && now - cached.time < OHLC_CACHE_TTL) {
     return cached.rows.slice(-limit);
   }  if (OHLC_INFLIGHT.has(cacheKey)) {
     return (await OHLC_INFLIGHT.get(cacheKey)).slice(-limit);
@@ -832,7 +861,7 @@ function buildHTML() {
 "    const c=d.current;",
 "    $('summary').innerHTML=" +
 "'<div class=\"card\"><div class=\"label\">当前</div><div class=\"value\">'+d.symbol+'</div></div>'+" +
-"'<div class=\"card\"><div class=\"label\">BTC/标的价格</div><div class=\"value\">'+n(d.price,2)+'</div></div>'+" +
+"'<div class=\"card\"><div class=\"label\">标的价格</div><div class=\"value\">'+n(d.price,2)+'</div></div>'+" +
 "'<div class=\"card\"><div class=\"label\">1H QuantVote</div><div class=\"value '+cls(c.vote)+'\">'+c.vote+'</div></div>'+" +
 "'<div class=\"card\"><div class=\"label\">1H Score</div><div class=\"value '+cls(c.vote)+'\">'+c.score+' / 7</div></div>'+" +
 "'<div class=\"card\"><div class=\"label\">风险</div><div class=\"value\">'+(c.indicators.atrPercent==null?'—':(c.indicators.atrPercent>=4||c.indicators.adx<15?'HIGH':c.indicators.atrPercent>=2?'MEDIUM':'LOW'))+'</div></div>';",
@@ -840,7 +869,7 @@ function buildHTML() {
 "    $('groups').innerHTML=['short','medium','long'].map(g=>{const x=d.groups[g];return '<span class=\"pill\">'+(g==='short'?'短期':g==='medium'?'中期':'长期')+'：'+x.label+' · '+x.netScore+' · '+x.consistency+'%</span>'}).join('');",
 "    const i=c.indicators;",
 "    const fields=[['EMA20',i.ema20],['EMA50',i.ema50],['EMA200',i.ema200],['RSI14',i.rsi14],['MACD',i.macd],['MACD Histogram',i.macdHistogram],['KDJ K',i.k],['KDJ D',i.d],['KDJ J',i.j],['Boll Middle',i.bollMiddle],['Boll Upper',i.bollUpper],['Boll Lower',i.bollLower],['ATR14',i.atr14],['ATR %',i.atrPercent],['Volume Ratio',i.volumeRatio],['ADX',i.adx],['+DI',i.plusDI],['-DI',i.minusDI],['OBV',i.obv],['OBV Trend',i.obvTrend]];",
-"    $('indicators').innerHTML=fields.map(x=>'<div class=\"card\"><div class=\"label\">'+x[0]+'</div><div class=\"value\">'+n(x[1],x[0]==='ATR %'||x[0]==='Volume Ratio'||x[0]==='RSI14'||x[0]==='ADX'||x[0]==='+DI'||x[0]==='-DI'?2:2)+'</div></div>').join('');",
+"    $('indicators').innerHTML=fields.map(x=>'<div class=\"card\"><div class=\"label\">'+x[0]+'</div><div class=\"value\">'+(x[0]==='OBV Trend'?String(x[1]||'neutral').toUpperCase():n(x[1],2))+'</div></div>').join('');",
 "  }catch(e){$('error').textContent=e.message||String(e)}",
 "}",
 "$('refresh').onclick=load;$('symbol').addEventListener('keydown',e=>{if(e.key==='Enter')load()});load();",
