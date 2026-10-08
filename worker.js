@@ -565,30 +565,30 @@ function indicatorRow(
   value,
   meaning,
   impact,
-  impactClass=""
+  impactClass
 ){
 
-  return `
+  return \`
     <tr>
 
       <td class="indicator-name">
-        ${esc(name)}
+        \${esc(name)}
       </td>
 
       <td class="indicator-value">
-        ${esc(value)}
+        \${esc(value)}
       </td>
 
       <td class="indicator-meaning">
-        ${esc(meaning)}
+        \${esc(meaning)}
       </td>
 
-      <td class="indicator-impact ${impactClass}">
-        ${esc(impact)}
+      <td class="indicator-impact \${impactClass}">
+        \${esc(impact)}
       </td>
 
     </tr>
-  `;
+  \`;
 }
 
 function getRsiMeaning(rsi){
@@ -926,7 +926,7 @@ function renderIndicators(ind){
     bollImpact="未知";
   }
 
-  const html=`
+  const html=\`
 
     <div class="indicator-table">
 
@@ -945,7 +945,7 @@ function renderIndicators(ind){
 
         <tbody>
 
-          ${indicatorRow(
+          \${indicatorRow(
             "当前价格",
             fmtPrice(ind.price),
             "当前市场价格",
@@ -953,7 +953,7 @@ function renderIndicators(ind){
             "neutral"
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "EMA20",
             fmtPrice(ind.ema20),
             "20周期指数移动平均线",
@@ -963,7 +963,7 @@ function renderIndicators(ind){
               : "bullish"
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "EMA50",
             fmtPrice(ind.ema50),
             "50周期趋势参考线",
@@ -971,7 +971,7 @@ function renderIndicators(ind){
             "neutral"
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "EMA200",
             fmtPrice(ind.ema200),
             "200周期长期趋势参考线",
@@ -979,7 +979,7 @@ function renderIndicators(ind){
             "neutral"
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "均线结构",
             trendInfo.meaning,
             emaStructure,
@@ -987,7 +987,7 @@ function renderIndicators(ind){
             trendInfo.cls
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "RSI14",
             fmtNumber(ind.rsi14,1),
             rsiInfo.meaning,
@@ -995,7 +995,7 @@ function renderIndicators(ind){
             rsiInfo.cls
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "MACD",
             fmtNumber(ind.macd,3),
             macdInfo.meaning,
@@ -1003,7 +1003,7 @@ function renderIndicators(ind){
             macdInfo.cls
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "MACD 信号线",
             fmtNumber(ind.macdSignal,3),
             "MACD 的比较基准",
@@ -1019,7 +1019,7 @@ function renderIndicators(ind){
               : "bearish"
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "MACD 柱体",
             fmtNumber(ind.macdHistogram,3),
             ind.macdHistogram!==null &&
@@ -1036,7 +1036,7 @@ function renderIndicators(ind){
               : "bearish"
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "KDJ-K",
             fmtNumber(ind.k,1),
             kdjInfo.meaning,
@@ -1044,7 +1044,7 @@ function renderIndicators(ind){
             kdjInfo.cls
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "KDJ-D",
             fmtNumber(ind.d,1),
             "KDJ 的趋势参考线",
@@ -1060,7 +1060,7 @@ function renderIndicators(ind){
               : "bearish"
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "KDJ-J",
             fmtNumber(ind.j,1),
             "KDJ 强化指标",
@@ -1068,7 +1068,7 @@ function renderIndicators(ind){
             "neutral"
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "布林中轨",
             fmtPrice(ind.bollMiddle),
             "20周期价格波动中线",
@@ -1076,7 +1076,7 @@ function renderIndicators(ind){
             "neutral"
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "布林上轨",
             fmtPrice(ind.bollUpper),
             "短期价格波动上边界",
@@ -1084,7 +1084,7 @@ function renderIndicators(ind){
             "neutral"
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "布林下轨",
             fmtPrice(ind.bollLower),
             "短期价格波动下边界",
@@ -1092,7 +1092,7 @@ function renderIndicators(ind){
             "neutral"
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "布林带宽度",
             fmtNumber(ind.bollWidth,2)+"%",
             "衡量当前价格波动范围",
@@ -1106,7 +1106,7 @@ function renderIndicators(ind){
               : "neutral"
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "ATR14",
             fmtNumber(ind.atr14,3),
             "平均真实波动幅度",
@@ -1114,7 +1114,7 @@ function renderIndicators(ind){
             "neutral"
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "ATR / 价格",
             fmtNumber(ind.atrPercent,2)+"%",
             "ATR 相对于当前价格的比例",
@@ -1128,7 +1128,7 @@ function renderIndicators(ind){
               : "neutral"
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "当前成交量",
             fmtNumber(ind.volume,2),
             "最近一个周期的成交量",
@@ -1136,7 +1136,7 @@ function renderIndicators(ind){
             volumeClass
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "20周期平均成交量",
             fmtNumber(ind.volumeAverage,2),
             "最近20个周期的平均成交量",
@@ -1144,7 +1144,7 @@ function renderIndicators(ind){
             "neutral"
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "成交量 / 均量",
             fmtNumber(ind.volumeRatio,2)+"倍",
             volumeMeaning,
@@ -1152,7 +1152,7 @@ function renderIndicators(ind){
             volumeClass
           )}
 
-          ${indicatorRow(
+          \${indicatorRow(
             "趋势",
             ind.trend,
             trendInfo.meaning,
@@ -1165,7 +1165,7 @@ function renderIndicators(ind){
       </table>
 
     </div>
-  `;
+  \`;
 
   document.getElementById(
     "indicatorReadable"
