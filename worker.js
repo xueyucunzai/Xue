@@ -712,6 +712,10 @@ function calculateAlignment(items) {
   const consistency = Math.round(
     Math.abs(netScore) / (valid.length * 7) * 100
   );
+  const dominantCount = Math.max(bullish, bearish, neutral);
+  const directionConsistency = Math.round(
+    dominantCount / valid.length * 100
+  );
 
   let label = "MIXED";
 
@@ -729,7 +733,8 @@ function calculateAlignment(items) {
     bearish,
     neutral,
     netScore,
-    consistency
+    consistency,
+    directionConsistency
   };
 }
 
@@ -752,6 +757,9 @@ async function analyzeTimeframe(pair, interval) {
     plusDI: indicators.plusDI,
     minusDI: indicators.minusDI,
     atrPercent: indicators.atrPercent,
+    votes: vote.votes,
+    reasons: vote.reasons,
+    risk: calculateRisk(indicators),
     indicators
   };
 }
@@ -829,7 +837,7 @@ function buildHTML() {
 ":root{color-scheme:dark;--bg:#0b1020;--panel:#121a2b;--line:#26324a;--text:#e8edf7;--muted:#94a3b8;--green:#42d392;--red:#ff6678;--yellow:#f6c85f;}",
 "*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}",
 ".wrap{max-width:1200px;margin:auto;padding:20px}.top{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.title{font-size:28px;font-weight:800}.sub{color:var(--muted);font-size:13px}",
-".controls{display:flex;gap:8px;margin:18px 0}.controls input{flex:1;min-width:180px;background:#0f1728;border:1px solid var(--line);color:var(--text);padding:11px;border-radius:8px}.controls button{background:#1d2940;color:var(--text);border:1px solid var(--line);padding:11px 16px;border-radius:8px}",
+".controls{display:flex;gap:8px;margin:18px 0;flex-wrap:wrap}.searchBox{display:flex;gap:8px;flex:1;min-width:260px;position:relative}.controls input{flex:1;min-width:180px;background:#0f1728;border:1px solid var(--line);color:var(--text);padding:11px;border-radius:8px}.controls button{background:#1d2940;color:var(--text);border:1px solid var(--line);padding:11px 16px;border-radius:8px;touch-action:manipulation}.searchResults{position:absolute;z-index:20;left:0;right:0;top:48px;background:#0f1728;border:1px solid var(--line);border-radius:10px;overflow:hidden;box-shadow:0 12px 30px rgba(0,0,0,.35)}.searchItem{display:flex;justify-content:space-between;gap:10px;width:100%;background:#0f1728;color:var(--text);border:0;border-bottom:1px solid var(--line);padding:12px;text-align:left;cursor:pointer}.searchItem:last-child{border-bottom:0}.searchItem:hover{background:#182238}.searchMain{font-weight:700}.searchSub{color:var(--muted);font-size:11px;margin-top:3px}.hidden{display:none}.reason{padding:9px 11px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:10px}.raw{white-space:pre-wrap;word-break:break-word;background:#0a0f1c;border:1px solid var(--line);border-radius:8px;padding:12px;font-size:11px;max-height:360px;overflow:auto}.sectionTitle{font-weight:700;margin-bottom:8px}",
 ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}.label{font-size:12px;color:var(--muted)}.value{font-size:25px;font-weight:800;margin-top:5px}",
 ".bull{color:var(--green)}.bear{color:var(--red)}.neutral{color:var(--yellow)}",
 "table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}th,td{text-align:left;padding:10px;border-bottom:1px solid var(--line)}th{color:var(--muted)}",
@@ -840,17 +848,25 @@ function buildHTML() {
 "<body>",
 "<main class='wrap'>",
 "<div class='top'><div><div class='title'>QuantVote V3</div><div class='sub'>Technical Research Dashboard · Kraken Public Data</div></div></div>",
-"<div class='controls'><input id='symbol' value='BTCUSD' placeholder='BTCUSD / ETHUSD / SOLUSD'><button id='refresh'>刷新数据</button></div>",
+"<div class='controls'><div class='searchBox'><input id='symbol' value='BTCUSD' placeholder='搜索 BTC / ETH / SOL ...' autocomplete='off'><button id='searchBtn'>搜索</button><div id='searchResults' class='searchResults hidden'></div></div><button id='refresh'>刷新数据</button></div>",
 "<div id='error' class='error'></div>",
 "<div id='summary' class='grid'></div>",
 "<div class='section card'><div class='label'>多周期 QuantVote</div><div class='small'>短期：5m / 15m　中期：1H / 4H / 8H　长期：1D / 1W</div><div id='table'></div></div>",
 "<div class='section card'><div class='label'>周期一致性</div><div id='groups'></div></div>",
-"<div class='section card'><div class='label'>1H 技术指标</div><div id='indicators' class='grid'></div></div>",
+"<div class='section card'><div class='sectionTitle'>1H Vote 判断依据</div><div id='voteReasons'></div></div>",
+"<div class='section card'><div class='sectionTitle'>市场状态</div><div id='regime'></div></div>",
+"<div class='section card'><div class='sectionTitle'>回测</div><div id='backtest'></div></div>",
+"<div class='section card'><div class='sectionTitle'>1H 技术指标</div><div id='indicators' class='grid'></div></div>",
+"<div class='section card'><div class='sectionTitle'>原始指标数据</div><pre id='rawData' class='raw'></pre></div>",
 "</main>",
 "<script>",
 "const $=id=>document.getElementById(id);",
 "function cls(v){return String(v||'').toLowerCase().includes('bull')?'bull':String(v||'').toLowerCase().includes('bear')?'bear':'neutral'}",
 "function n(v,d=2){return v==null||!Number.isFinite(Number(v))?'—':Number(v).toFixed(d)}",
+"function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\\\"/g,'&quot;').replace(/'/g,'&#39;')}",
+"function hideSearch(){ $('searchResults').classList.add('hidden'); $('searchResults').innerHTML=''; }",
+"function showSearch(items){ const box=$('searchResults'); if(!items.length){box.innerHTML='<div class=\\\"searchItem\\\"><div><div class=\\\"searchMain\\\">没有找到交易对</div><div class=\\\"searchSub\\\">请换一个币种名称或代码</div></div></div>';box.classList.remove('hidden');return;} box.innerHTML=items.map(x=>'<button type=\\\"button\\\" class=\\\"searchItem\\\" data-symbol=\\\"'+esc(x.symbol)+'\\\"><div><div class=\\\"searchMain\\\">'+esc(x.display||x.pair||x.symbol)+'</div><div class=\\\"searchSub\\\">'+esc(x.pair||x.symbol)+'</div></div><div class=\\\"searchSub\\\">选择</div></button>').join(''); box.classList.remove('hidden'); box.querySelectorAll('[data-symbol]').forEach(b=>b.onclick=()=>{ $('symbol').value=b.dataset.symbol; hideSearch(); load(); }); }",
+"async function searchPairs(){ const q=$('symbol').value.trim(); if(!q){hideSearch();return;} try{ const r=await fetch('/api/pairs?q='+encodeURIComponent(q)); const d=await r.json(); if(!r.ok||d.status==='error') throw new Error(d.error||'搜索失败'); showSearch(d.results||[]); }catch(e){ $('error').textContent=e.message||String(e); } }",
 "async function load(){",
 "  const raw=$('symbol').value.trim()||'BTCUSD';",
 "  $('error').textContent='';",
@@ -858,7 +874,7 @@ function buildHTML() {
 "    const r=await fetch('/api/analysis?symbol='+encodeURIComponent(raw));",
 "    const d=await r.json();",
 "    if(!r.ok||d.status==='error')throw new Error(d.error||'请求失败');",
-"    const c=d.current;",
+"    const c=d.current;if(!c)throw new Error('没有当前周期数据');",
 "    $('summary').innerHTML=" +
 "'<div class=\"card\"><div class=\"label\">当前</div><div class=\"value\">'+d.symbol+'</div></div>'+" +
 "'<div class=\"card\"><div class=\"label\">标的价格</div><div class=\"value\">'+n(d.price,2)+'</div></div>'+" +
@@ -866,13 +882,13 @@ function buildHTML() {
 "'<div class=\"card\"><div class=\"label\">1H Score</div><div class=\"value '+cls(c.vote)+'\">'+c.score+' / 7</div></div>'+" +
 "'<div class=\"card\"><div class=\"label\">风险</div><div class=\"value\">'+(c.indicators.atrPercent==null?'—':(c.indicators.atrPercent>=4||c.indicators.adx<15?'HIGH':c.indicators.atrPercent>=2?'MEDIUM':'LOW'))+'</div></div>';",
 "    $('table').innerHTML='<table><thead><tr><th>周期</th><th>分类</th><th>价格</th><th>Score</th><th>Vote</th><th>Trend</th><th>RSI</th><th>ADX</th></tr></thead><tbody>'+d.timeframes.map(x=>'<tr><td>'+x.interval+'</td><td>'+x.groupLabel+'</td><td>'+n(x.price)+'</td><td class=\"'+cls(x.vote)+'\">'+x.score+'</td><td class=\"'+cls(x.vote)+'\">'+x.vote+'</td><td>'+x.trend+'</td><td>'+n(x.rsi,1)+'</td><td>'+n(x.adx,1)+'</td></tr>').join('')+'</tbody></table>';",
-"    $('groups').innerHTML=['short','medium','long'].map(g=>{const x=d.groups[g];return '<span class=\"pill\">'+(g==='short'?'短期':g==='medium'?'中期':'长期')+'：'+x.label+' · '+x.netScore+' · '+x.consistency+'%</span>'}).join('');",
+"    $('groups').innerHTML=['short','medium','long'].map(g=>{const x=d.groups[g];return '<span class=\"pill\">'+(g==='short'?'短期':g==='medium'?'中期':'长期')+'：'+x.label+' · 净分 '+x.netScore+' · 方向一致 '+x.directionConsistency+'% · 强度 '+x.consistency+'%</span>'}).join('');",
 "    const i=c.indicators;",
 "    const fields=[['EMA20',i.ema20],['EMA50',i.ema50],['EMA200',i.ema200],['RSI14',i.rsi14],['MACD',i.macd],['MACD Histogram',i.macdHistogram],['KDJ K',i.k],['KDJ D',i.d],['KDJ J',i.j],['Boll Middle',i.bollMiddle],['Boll Upper',i.bollUpper],['Boll Lower',i.bollLower],['ATR14',i.atr14],['ATR %',i.atrPercent],['Volume Ratio',i.volumeRatio],['ADX',i.adx],['+DI',i.plusDI],['-DI',i.minusDI],['OBV',i.obv],['OBV Trend',i.obvTrend]];",
-"    $('indicators').innerHTML=fields.map(x=>'<div class=\"card\"><div class=\"label\">'+x[0]+'</div><div class=\"value\">'+(x[0]==='OBV Trend'?String(x[1]||'neutral').toUpperCase():n(x[1],2))+'</div></div>').join('');",
+"    $('indicators').innerHTML=fields.map(x=>'<div class=\"card\"><div class=\"label\">'+x[0]+'</div><div class=\"value\">'+(x[0]==='OBV Trend'?String(x[1]||'neutral').toUpperCase():n(x[1],2))+'</div></div>').join(''); $('voteReasons').innerHTML=(c.reasons||[]).map((r,idx)=>'<div class=\"reason\"><span>Vote '+(idx+1)+'</span><span>'+esc(r)+'</span></div>').join('')||'<div class=\"small\">暂无判断依据</div>'; $('regime').innerHTML='<div class=\"grid\"><div class=\"card\"><div class=\"label\">1D 市场状态</div><div class=\"value\" id=\"regimeValue\">加载中</div></div><div class=\"card\"><div class=\"label\">整体多周期</div><div class=\"value\">'+esc(d.alignment.label)+'</div></div></div>'; $('backtest').innerHTML='<div class=\"small\">正在计算基准回测...</div>'; $('rawData').textContent=JSON.stringify(c.indicators,null,2); try{const rr=await fetch('/api/regime?pair='+encodeURIComponent(d.pair));const rd=await rr.json();$('regimeValue').textContent=rd.regime||'—';}catch(_){$('regimeValue').textContent='—';} try{const br=await fetch('/api/backtest?pair='+encodeURIComponent(d.pair)+'&interval=1H');const bd=await br.json();if(br.ok&&bd.status==='ok'){$('backtest').innerHTML='<div class=\"grid\"><div class=\"card\"><div class=\"label\">Trades</div><div class=\"value\">'+n(bd.trades,0)+'</div></div><div class=\"card\"><div class=\"label\">Win Rate</div><div class=\"value\">'+n(bd.winRate*100,1)+'%</div></div><div class=\"card\"><div class=\"label\">Return</div><div class=\"value\">'+n(bd.cumulativeReturn*100,2)+'%</div></div><div class=\"card\"><div class=\"label\">Max DD</div><div class=\"value\">'+n(bd.maxDrawdown*100,2)+'%</div></div><div class=\"card\"><div class=\"label\">Sharpe</div><div class=\"value\">'+n(bd.sharpe,2)+'</div></div><div class=\"card\"><div class=\"label\">Profit Factor</div><div class=\"value\">'+n(bd.profitFactor,2)+'</div></div></div>';}else{$('backtest').innerHTML='<div class=\"error\">回测失败</div>';}}catch(_){$('backtest').innerHTML='<div class=\"error\">回测暂时不可用</div>';}",
 "  }catch(e){$('error').textContent=e.message||String(e)}",
 "}",
-"$('refresh').onclick=load;$('symbol').addEventListener('keydown',e=>{if(e.key==='Enter')load()});load();",
+"$('refresh').onclick=load;$('searchBtn').onclick=searchPairs;$('symbol').addEventListener('input',()=>{if($('symbol').value.trim().length>=2)searchPairs()});$('symbol').addEventListener('focus',()=>{if($('symbol').value.trim().length>=2)searchPairs()});$('symbol').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();searchPairs()}});document.addEventListener('click',e=>{if(!e.target.closest('.searchBox'))hideSearch()});load();",
 "</script>",
 "</body>",
 "</html>"
