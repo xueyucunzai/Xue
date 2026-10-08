@@ -2193,6 +2193,480 @@ function calculateIndicators(
     j:kd.j,
 
     bollMiddle:bb.middle,
+function calculateAdx(
+  candles,
+  period=14
+){
+
+  if(
+    candles.length <
+    period*2+1
+  ){
+
+    return {
+      adx:null,
+      plusDI:null,
+      minusDI:null
+    };
+  }
+
+  const tr=[];
+  const plusDM=[];
+  const minusDM=[];
+
+  for(
+    let i=1;
+    i<candles.length;
+    i++
+  ){
+
+    const current=
+      candles[i];
+
+    const previous=
+      candles[i-1];
+
+    const upMove=
+      current.high-
+      previous.high;
+
+    const downMove=
+      previous.low-
+      current.low;
+
+    const trueRange=
+      Math.max(
+        current.high-current.low,
+        Math.abs(
+          current.high-
+          previous.close
+        ),
+        Math.abs(
+          current.low-
+          previous.close
+        )
+      );
+
+    tr.push(trueRange);
+
+    plusDM.push(
+      upMove>downMove &&
+      upMove>0
+        ? upMove
+        : 0
+    );
+
+    minusDM.push(
+      downMove>upMove &&
+      downMove>0
+        ? downMove
+        : 0
+    );
+  }
+
+  if(tr.length<period*2){
+    return {
+      adx:null,
+      plusDI:null,
+      minusDI:null
+    };
+  }
+
+  let trSmooth=0;
+  let plusSmooth=0;
+  let minusSmooth=0;
+
+  for(
+    let i=0;
+    i<period;
+    i++
+  ){
+
+    trSmooth+=tr[i];
+    plusSmooth+=plusDM[i];
+    minusSmooth+=minusDM[i];
+  }
+
+  const dx=[];
+
+  let lastPlusDI=null;
+  let lastMinusDI=null;
+
+  for(
+    let i=period;
+    i<tr.length;
+    i++
+  ){
+
+    trSmooth=
+      trSmooth-
+      trSmooth/period+
+      tr[i];
+
+    plusSmooth=
+      plusSmooth-
+      plusSmooth/period+
+      plusDM[i];
+
+    minusSmooth=
+      minusSmooth-
+      minusSmooth/period+
+      minusDM[i];
+
+    const plusDI=
+      trSmooth!==0
+        ? 100*plusSmooth/trSmooth
+        : 0;
+
+    const minusDI=
+      trSmooth!==0
+        ? 100*minusSmooth/trSmooth
+        : 0;
+
+    lastPlusDI=plusDI;
+    lastMinusDI=minusDI;
+
+    const denominator=
+      plusDI+
+      minusDI;
+
+    const value=
+      denominator!==0
+        ? 100*
+          Math.abs(
+            plusDI-minusDI
+          )/
+          denominator
+        : 0;
+
+    dx.push(value);
+  }
+
+  if(dx.length<period){
+
+    return {
+      adx:null,
+      plusDI:lastPlusDI,
+      minusDI:lastMinusDI
+    };
+  }
+
+  let adx=0;
+
+  for(
+    let i=0;
+    i<period;
+    i++
+  ){
+
+    adx+=dx[i];
+  }
+
+  adx/=period;
+
+  for(
+    let i=period;
+    i<dx.length;
+    i++
+  ){
+
+    adx=
+      (
+        adx*(period-1)+
+        dx[i]
+      )/
+      period;
+  }
+
+  return {
+
+    adx,
+
+    plusDI:lastPlusDI,
+
+    minusDI:lastMinusDI
+
+  };
+}
+
+function calculateObv(
+  candles
+){
+
+  if(
+    candles.length<2
+  ){
+
+    return {
+      obv:null,
+      obvPrevious:null,
+      obvChange:null
+    };
+  }
+
+  let obv=0;
+
+  for(
+    let i=1;
+    i<candles.length;
+    i++
+  ){
+
+    if(
+      candles[i].close>
+      candles[i-1].close
+    ){
+
+      obv+=
+        candles[i].volume;
+
+    }else if(
+      candles[i].close<
+      candles[i-1].close
+    ){
+
+      obv-=
+        candles[i].volume;
+    }
+  }
+
+  let previousObv=0;
+
+  for(
+    let i=1;
+    i<candles.length-1;
+    i++
+  ){
+
+    if(
+      candles[i].close>
+      candles[i-1].close
+    ){
+
+      previousObv+=
+        candles[i].volume;
+
+    }else if(
+      candles[i].close<
+      candles[i-1].close
+    ){
+
+      previousObv-=
+        candles[i].volume;
+    }
+  }
+
+  return {
+
+    obv,
+
+    obvPrevious:
+      previousObv,
+
+    obvChange:
+      obv-
+      previousObv
+
+  };
+}
+
+function calculateIndicators(
+  candles
+){
+
+  const closes=
+    candles.map(
+      x=>x.close
+    );
+
+  const price=
+    closes[
+      closes.length-1
+    ];
+
+  const ema20=
+    ema(
+      closes,
+      20
+    );
+
+  const ema50=
+    ema(
+      closes,
+      50
+    );
+
+  const ema100=
+    ema(
+      closes,
+      100
+    );
+
+  const ema200=
+    ema(
+      closes,
+      200
+    );
+
+  const rsi14=
+    rsi(
+      closes,
+      14
+    );
+
+  const m=
+    macd(closes);
+
+  const kd=
+    kdj(
+      candles,
+      9
+    );
+
+  const bb=
+    bollinger(
+      closes,
+      20,
+      2
+    );
+
+  const atr14=
+    atr(
+      candles,
+      14
+    );
+
+  const adxData=
+    calculateAdx(
+      candles,
+      14
+    );
+
+  const obvData=
+    calculateObv(
+      candles
+    );
+
+  const volumes=
+    candles.map(
+      x=>x.volume
+    );
+
+  const volume=
+    volumes[
+      volumes.length-1
+    ];
+
+  const volumeAverage=
+    sma(
+      volumes,
+      20
+    );
+
+  let trend="mixed";
+
+  if(
+    ema20!==null &&
+    ema50!==null &&
+    ema200!==null
+  ){
+
+    if(
+      price>ema20 &&
+      ema20>ema50 &&
+      ema50>ema200
+    ){
+
+      trend=
+        "strong_bullish";
+
+    }else if(
+      price<ema20 &&
+      ema20<ema50 &&
+      ema50<ema200
+    ){
+
+      trend=
+        "strong_bearish";
+
+    }else if(
+      price>ema50
+    ){
+
+      trend=
+        "bullish";
+
+    }else if(
+      price<ema50
+    ){
+
+      trend=
+        "bearish";
+    }
+  }
+
+  let trendStrength=
+    "WEAK";
+
+  if(
+    adxData.adx!==null
+  ){
+
+    if(adxData.adx>=35){
+
+      trendStrength=
+        "STRONG";
+
+    }else if(adxData.adx>=25){
+
+      trendStrength=
+        "MODERATE";
+    }
+  }
+
+  let diBias="NEUTRAL";
+
+  if(
+    adxData.plusDI!==null &&
+    adxData.minusDI!==null
+  ){
+
+    if(
+      adxData.plusDI>
+      adxData.minusDI
+    ){
+
+      diBias="BULLISH";
+
+    }else if(
+      adxData.plusDI<
+      adxData.minusDI
+    ){
+
+      diBias="BEARISH";
+    }
+  }
+
+  return {
+
+    price,
+
+    ema20,
+    ema50,
+    ema100,
+    ema200,
+
+    rsi14,
+
+    macd:m.macd,
+    macdSignal:m.signal,
+    macdHistogram:m.histogram,
+
+    k:kd.k,
+    d:kd.d,
+    j:kd.j,
+
+    bollMiddle:bb.middle,
     bollUpper:bb.upper,
     bollLower:bb.lower,
     bollWidth:bb.width,
@@ -2208,6 +2682,7 @@ function calculateIndicators(
       : null,
 
     volume,
+
     volumeAverage,
 
     volumeRatio:
@@ -2216,10 +2691,32 @@ function calculateIndicators(
       ? volume/volumeAverage
       : 0,
 
-    trend
-  };
-}
+    adx:
+      adxData.adx,
 
+    plusDI:
+      adxData.plusDI,
+
+    minusDI:
+      adxData.minusDI,
+
+    diBias,
+
+    obv:
+      obvData.obv,
+
+    obvPrevious:
+      obvData.obvPrevious,
+
+    obvChange:
+      obvData.obvChange,
+
+    trend,
+
+    trendStrength
+
+  };
+    }
 /* =========================================================
    Vote
    ========================================================= */
