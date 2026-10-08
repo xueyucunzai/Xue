@@ -324,7 +324,7 @@ function calculateRSI(values, period = 14) {
     averageLoss = (averageLoss * (period - 1) + currentLoss) / period;
   }
 
-  if (averageLoss === 0) return 100;
+  if (averageLoss === 0) return averageGain === 0 ? 50 : 100;
   const rs = averageGain / averageLoss;
   return 100 - 100 / (1 + rs);
 }
@@ -347,28 +347,33 @@ function calculateMACD(values) {
 
   let fast = values[0];
   let slow = values[0];
-  let signal = null;
-  let last = null;
+  const macdSeries = [];
 
   for (let i = 1; i < values.length; i++) {
     fast = values[i] * fastK + fast * (1 - fastK);
     slow = values[i] * slowK + slow * (1 - slowK);
 
     if (i >= slowPeriod - 1) {
-      const line = fast - slow;
-      signal = signal === null ? line : line * signalK + signal * (1 - signalK);
-      last = {
-        macd: line,
-        signal,
-        histogram: line - signal
-      };
+      macdSeries.push(fast - slow);
     }
   }
 
-  return last || {
-    macd: null,
-    signal: null,
-    histogram: null
+  if (macdSeries.length < signalPeriod) {
+    return { macd: null, signal: null, histogram: null };
+  }
+
+  let signal = macdSeries.slice(0, signalPeriod).reduce((a, b) => a + b, 0) / signalPeriod;
+  let line = macdSeries[signalPeriod - 1];
+
+  for (let i = signalPeriod; i < macdSeries.length; i++) {
+    line = macdSeries[i];
+    signal = line * signalK + signal * (1 - signalK);
+  }
+
+  return {
+    macd: line,
+    signal,
+    histogram: line - signal
   };
 }
 
@@ -415,11 +420,21 @@ function calculateATR(rows, period = 14) {
     );
   }
 
-  return sma(tr, period);
+  if (tr.length < period) return null;
+
+  // Wilder RMA：第一个 ATR 使用前 period 个 TR 的平均值，
+  // 后续 ATR 使用 Wilder 递推平滑。
+  let atr = tr.slice(0, period).reduce((a, b) => a + b, 0) / period;
+
+  for (let i = period; i < tr.length; i++) {
+    atr = ((atr * (period - 1)) + tr[i]) / period;
+  }
+
+  return atr;
 }
 
 function calculateADX(rows, period = 14) {
-  if (!rows || rows.length < period + 2) {
+  if (!rows || rows.length < period * 2 + 1) {
     return {
       adx: null,
       plusDI: null,
@@ -450,30 +465,54 @@ function calculateADX(rows, period = 14) {
     minusDM.push(down > up && down > 0 ? down : 0);
   }
 
+  let smoothedTR = tr.slice(0, period).reduce((a, b) => a + b, 0);
+  let smoothedPlusDM = plusDM.slice(0, period).reduce((a, b) => a + b, 0);
+  let smoothedMinusDM = minusDM.slice(0, period).reduce((a, b) => a + b, 0);
+
   const dx = [];
   let lastPlus = null;
   let lastMinus = null;
 
-  for (let i = period - 1; i < tr.length; i++) {
-    const trSum = tr.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0);
-    const plusSum = plusDM.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0);
-    const minusSum = minusDM.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0);
-
-    const plusDI = trSum ? 100 * plusSum / trSum : 0;
-    const minusDI = trSum ? 100 * minusSum / trSum : 0;
+  function pushDI() {
+    const plusDI = smoothedTR > 0 ? 100 * smoothedPlusDM / smoothedTR : 0;
+    const minusDI = smoothedTR > 0 ? 100 * smoothedMinusDM / smoothedTR : 0;
 
     lastPlus = plusDI;
     lastMinus = minusDI;
 
+    const denominator = plusDI + minusDI;
     dx.push(
-      plusDI + minusDI
-        ? 100 * Math.abs(plusDI - minusDI) / (plusDI + minusDI)
+      denominator > 0
+        ? 100 * Math.abs(plusDI - minusDI) / denominator
         : 0
     );
   }
 
+  pushDI();
+
+  for (let i = period; i < tr.length; i++) {
+    smoothedTR = smoothedTR - smoothedTR / period + tr[i];
+    smoothedPlusDM = smoothedPlusDM - smoothedPlusDM / period + plusDM[i];
+    smoothedMinusDM = smoothedMinusDM - smoothedMinusDM / period + minusDM[i];
+    pushDI();
+  }
+
+  if (dx.length < period) {
+    return {
+      adx: null,
+      plusDI: lastPlus,
+      minusDI: lastMinus
+    };
+  }
+
+  let adx = dx.slice(0, period).reduce((a, b) => a + b, 0) / period;
+
+  for (let i = period; i < dx.length; i++) {
+    adx = ((adx * (period - 1)) + dx[i]) / period;
+  }
+
   return {
-    adx: sma(dx, period),    plusDI: lastPlus,
+    adx: adx,    plusDI: lastPlus,
     minusDI: lastMinus
   };
 }
@@ -594,9 +633,9 @@ function calculateVote(indicators) {
   let vote;
 
   vote =
-    indicators.trend.includes("bull")
+    indicators.trend === "strong_bullish" || indicators.trend === "bullish"
       ? 1
-      : indicators.trend.includes("bear")
+      : indicators.trend === "strong_bearish" || indicators.trend === "bearish"
         ? -1
         : 0;
   votes.push(vote);
@@ -605,13 +644,15 @@ function calculateVote(indicators) {
   vote =
     indicators.rsi14 === null
       ? 0
-      : indicators.rsi14 < 30
+      : indicators.rsi14 <= 25
         ? 1
-        : indicators.rsi14 > 70
+        : indicators.rsi14 >= 75
           ? -1
-          : indicators.rsi14 >= 50
+          : indicators.rsi14 >= 55
             ? 1
-            : -1;
+            : indicators.rsi14 >= 45
+              ? 0
+              : -1;
   votes.push(vote);
   reasons.push("RSI14：" + (vote > 0 ? "偏多" : vote < 0 ? "偏空" : "中性"));
 
@@ -628,29 +669,38 @@ function calculateVote(indicators) {
   vote =
     indicators.k === null || indicators.d === null
       ? 0
-      : indicators.k > indicators.d
+      : indicators.k <= 20 && indicators.k > indicators.d
         ? 1
-        : indicators.k < indicators.d
+        : indicators.k >= 80 && indicators.k < indicators.d
           ? -1
-          : 0;
+          : indicators.k > indicators.d
+            ? 1
+            : indicators.k < indicators.d
+              ? -1
+              : 0;
   votes.push(vote);
   reasons.push("KDJ：" + (vote > 0 ? "K高于D" : vote < 0 ? "K低于D" : "中性"));
 
   vote =
-    indicators.bollUpper === null
+    indicators.bollUpper === null ||
+    indicators.bollLower === null ||
+    indicators.bollMiddle === null ||
+    indicators.price === null
       ? 0
-      : indicators.price > indicators.bollUpper
+      : indicators.price >= indicators.bollUpper
         ? -1
-        : indicators.price < indicators.bollLower
+        : indicators.price <= indicators.bollLower
           ? 1
           : indicators.price >= indicators.bollMiddle
             ? 1
-            : -1;
+            : indicators.price < indicators.bollMiddle
+              ? -1
+              : 0;
   votes.push(vote);
   reasons.push("Bollinger：" + (vote > 0 ? "偏多" : vote < 0 ? "偏空" : "中性"));
 
   vote =
-    indicators.volumeRatio === null
+    indicators.volumeRatio === null || indicators.macdHistogram === null
       ? 0
       : indicators.volumeRatio > 1.2
         ? indicators.macdHistogram > 0
@@ -684,11 +734,16 @@ function calculateVote(indicators) {
 
 function calculateRisk(indicators) {
   if (indicators.atrPercent === null) return "UNKNOWN";
-  if (
-    indicators.atrPercent >= 4 ||
-    (indicators.adx !== null && indicators.adx < 15)
-  ) return "HIGH";
-  if (indicators.atrPercent >= 2) return "MEDIUM";
+
+  const highVolatility = indicators.atrPercent >= 4;
+  const wideBollinger = indicators.bollWidth !== null && indicators.bollWidth >= 12;
+  const mediumVolatility = indicators.atrPercent >= 2;
+  const weakTrend = indicators.adx !== null && indicators.adx < 15;
+  const extremeRSI = indicators.rsi14 !== null &&
+    (indicators.rsi14 <= 20 || indicators.rsi14 >= 80);
+
+  if (highVolatility || wideBollinger) return "HIGH";
+  if (mediumVolatility || weakTrend || extremeRSI) return "MEDIUM";
   return "LOW";
 }
 
@@ -701,7 +756,8 @@ function calculateAlignment(items) {
       bearish: 0,
       neutral: 0,
       netScore: 0,
-      consistency: 0
+      consistency: 0,
+      directionConsistency: 0
     };
   }
 
@@ -712,10 +768,12 @@ function calculateAlignment(items) {
   const consistency = Math.round(
     Math.abs(netScore) / (valid.length * 7) * 100
   );
-  const dominantCount = Math.max(bullish, bearish, neutral);
-  const directionConsistency = Math.round(
-    dominantCount / valid.length * 100
-  );
+  const directionalCount = bullish + bearish;
+  const dominantDirection = Math.max(bullish, bearish);
+  const directionConsistency =
+    directionalCount > 0
+      ? Math.round(dominantDirection / directionalCount * 100)
+      : 0;
 
   let label = "MIXED";
 
@@ -866,13 +924,15 @@ function buildHTML() {
 "function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\\\"/g,'&quot;').replace(/'/g,'&#39;')}",
 "function hideSearch(){ $('searchResults').classList.add('hidden'); $('searchResults').innerHTML=''; }",
 "function showSearch(items){ const box=$('searchResults'); if(!items.length){box.innerHTML='<div class=\\\"searchItem\\\"><div><div class=\\\"searchMain\\\">没有找到交易对</div><div class=\\\"searchSub\\\">请换一个币种名称或代码</div></div></div>';box.classList.remove('hidden');return;} box.innerHTML=items.map(x=>'<button type=\\\"button\\\" class=\\\"searchItem\\\" data-symbol=\\\"'+esc(x.symbol)+'\\\"><div><div class=\\\"searchMain\\\">'+esc(x.display||x.pair||x.symbol)+'</div><div class=\\\"searchSub\\\">'+esc(x.pair||x.symbol)+'</div></div><div class=\\\"searchSub\\\">选择</div></button>').join(''); box.classList.remove('hidden'); box.querySelectorAll('[data-symbol]').forEach(b=>b.onclick=()=>{ $('symbol').value=b.dataset.symbol; hideSearch(); load(); }); }",
-"async function searchPairs(){ const q=$('symbol').value.trim(); if(!q){hideSearch();return;} try{ const r=await fetch('/api/pairs?q='+encodeURIComponent(q)); const d=await r.json(); if(!r.ok||d.status==='error') throw new Error(d.error||'搜索失败'); showSearch(d.results||[]); }catch(e){ $('error').textContent=e.message||String(e); } }",
+"let searchTimer=null; let searchRequestId=0; let loadSeq=0; async function searchPairs(){ const q=$('symbol').value.trim(); if(!q){searchRequestId++;hideSearch();return;} const requestId=++searchRequestId; try{ const r=await fetch('/api/pairs?q='+encodeURIComponent(q)); const d=await r.json(); if(requestId!==searchRequestId)return; if(!r.ok||d.status==='error') throw new Error(d.error||'搜索失败'); showSearch(d.results||[]); }catch(e){ if(requestId===searchRequestId)$('error').textContent=e.message||String(e); } }",
 "async function load(){",
 "  const raw=$('symbol').value.trim()||'BTCUSD';",
+"  const requestId=++loadSeq;",
 "  $('error').textContent='';",
 "  try{",
 "    const r=await fetch('/api/analysis?symbol='+encodeURIComponent(raw));",
 "    const d=await r.json();",
+"    if(requestId!==loadSeq)return;",
 "    if(!r.ok||d.status==='error')throw new Error(d.error||'请求失败');",
 "    const c=d.current;if(!c)throw new Error('没有当前周期数据');",
 "    $('summary').innerHTML=" +
@@ -880,15 +940,15 @@ function buildHTML() {
 "'<div class=\"card\"><div class=\"label\">标的价格</div><div class=\"value\">'+n(d.price,2)+'</div></div>'+" +
 "'<div class=\"card\"><div class=\"label\">1H QuantVote</div><div class=\"value '+cls(c.vote)+'\">'+c.vote+'</div></div>'+" +
 "'<div class=\"card\"><div class=\"label\">1H Score</div><div class=\"value '+cls(c.vote)+'\">'+c.score+' / 7</div></div>'+" +
-"'<div class=\"card\"><div class=\"label\">风险</div><div class=\"value\">'+(c.indicators.atrPercent==null?'—':(c.indicators.atrPercent>=4||c.indicators.adx<15?'HIGH':c.indicators.atrPercent>=2?'MEDIUM':'LOW'))+'</div></div>';",
+"'<div class=\"card\"><div class=\"label\">风险</div><div class=\"value\">'+(c.risk||'UNKNOWN')+'</div></div>';",
 "    $('table').innerHTML='<table><thead><tr><th>周期</th><th>分类</th><th>价格</th><th>Score</th><th>Vote</th><th>Trend</th><th>RSI</th><th>ADX</th></tr></thead><tbody>'+d.timeframes.map(x=>'<tr><td>'+x.interval+'</td><td>'+x.groupLabel+'</td><td>'+n(x.price)+'</td><td class=\"'+cls(x.vote)+'\">'+x.score+'</td><td class=\"'+cls(x.vote)+'\">'+x.vote+'</td><td>'+x.trend+'</td><td>'+n(x.rsi,1)+'</td><td>'+n(x.adx,1)+'</td></tr>').join('')+'</tbody></table>';",
 "    $('groups').innerHTML=['short','medium','long'].map(g=>{const x=d.groups[g];return '<span class=\"pill\">'+(g==='short'?'短期':g==='medium'?'中期':'长期')+'：'+x.label+' · 净分 '+x.netScore+' · 方向一致 '+x.directionConsistency+'% · 强度 '+x.consistency+'%</span>'}).join('');",
 "    const i=c.indicators;",
 "    const fields=[['EMA20',i.ema20],['EMA50',i.ema50],['EMA200',i.ema200],['RSI14',i.rsi14],['MACD',i.macd],['MACD Histogram',i.macdHistogram],['KDJ K',i.k],['KDJ D',i.d],['KDJ J',i.j],['Boll Middle',i.bollMiddle],['Boll Upper',i.bollUpper],['Boll Lower',i.bollLower],['ATR14',i.atr14],['ATR %',i.atrPercent],['Volume Ratio',i.volumeRatio],['ADX',i.adx],['+DI',i.plusDI],['-DI',i.minusDI],['OBV',i.obv],['OBV Trend',i.obvTrend]];",
-"    $('indicators').innerHTML=fields.map(x=>'<div class=\"card\"><div class=\"label\">'+x[0]+'</div><div class=\"value\">'+(x[0]==='OBV Trend'?String(x[1]||'neutral').toUpperCase():n(x[1],2))+'</div></div>').join(''); $('voteReasons').innerHTML=(c.reasons||[]).map((r,idx)=>'<div class=\"reason\"><span>Vote '+(idx+1)+'</span><span>'+esc(r)+'</span></div>').join('')||'<div class=\"small\">暂无判断依据</div>'; $('regime').innerHTML='<div class=\"grid\"><div class=\"card\"><div class=\"label\">1D 市场状态</div><div class=\"value\" id=\"regimeValue\">加载中</div></div><div class=\"card\"><div class=\"label\">整体多周期</div><div class=\"value\">'+esc(d.alignment.label)+'</div></div></div>'; $('backtest').innerHTML='<div class=\"small\">正在计算基准回测...</div>'; $('rawData').textContent=JSON.stringify(c.indicators,null,2); try{const rr=await fetch('/api/regime?pair='+encodeURIComponent(d.pair));const rd=await rr.json();$('regimeValue').textContent=rd.regime||'—';}catch(_){$('regimeValue').textContent='—';} try{const br=await fetch('/api/backtest?pair='+encodeURIComponent(d.pair)+'&interval=1H');const bd=await br.json();if(br.ok&&bd.status==='ok'){$('backtest').innerHTML='<div class=\"grid\"><div class=\"card\"><div class=\"label\">Trades</div><div class=\"value\">'+n(bd.trades,0)+'</div></div><div class=\"card\"><div class=\"label\">Win Rate</div><div class=\"value\">'+n(bd.winRate*100,1)+'%</div></div><div class=\"card\"><div class=\"label\">Return</div><div class=\"value\">'+n(bd.cumulativeReturn*100,2)+'%</div></div><div class=\"card\"><div class=\"label\">Max DD</div><div class=\"value\">'+n(bd.maxDrawdown*100,2)+'%</div></div><div class=\"card\"><div class=\"label\">Sharpe</div><div class=\"value\">'+n(bd.sharpe,2)+'</div></div><div class=\"card\"><div class=\"label\">Profit Factor</div><div class=\"value\">'+n(bd.profitFactor,2)+'</div></div></div>';}else{$('backtest').innerHTML='<div class=\"error\">回测失败</div>';}}catch(_){$('backtest').innerHTML='<div class=\"error\">回测暂时不可用</div>';}",
-"  }catch(e){$('error').textContent=e.message||String(e)}",
+"    $('indicators').innerHTML=fields.map(x=>'<div class=\"card\"><div class=\"label\">'+x[0]+'</div><div class=\"value\">'+(x[0]==='OBV Trend'?String(x[1]||'neutral').toUpperCase():n(x[1],2))+'</div></div>').join(''); $('voteReasons').innerHTML=(c.reasons||[]).map((r,idx)=>'<div class=\"reason\"><span>Vote '+(idx+1)+'</span><span>'+esc(r)+'</span></div>').join('')||'<div class=\"small\">暂无判断依据</div>'; $('regime').innerHTML='<div class=\"grid\"><div class=\"card\"><div class=\"label\">1D 市场状态</div><div class=\"value\" id=\"regimeValue\">加载中</div></div><div class=\"card\"><div class=\"label\">整体多周期</div><div class=\"value\">'+esc(d.alignment.label)+'</div></div></div>'; $('backtest').innerHTML='<div class=\"small\">正在计算基准回测...</div>'; $('rawData').textContent=JSON.stringify(c.indicators,null,2); try{const rr=await fetch('/api/regime?pair='+encodeURIComponent(d.pair));const rd=await rr.json();if(requestId!==loadSeq)return;$('regimeValue').textContent=rd.regime||'—';}catch(_){if(requestId===loadSeq)$('regimeValue').textContent='—';} try{const br=await fetch('/api/backtest?pair='+encodeURIComponent(d.pair)+'&interval=1H');const bd=await br.json();if(requestId!==loadSeq)return;if(br.ok&&bd.status==='ok'){$('backtest').innerHTML='<div class=\"grid\"><div class=\"card\"><div class=\"label\">Trades</div><div class=\"value\">'+n(bd.trades,0)+'</div></div><div class=\"card\"><div class=\"label\">Win Rate</div><div class=\"value\">'+n(bd.winRate*100,1)+'%</div></div><div class=\"card\"><div class=\"label\">Return</div><div class=\"value\">'+n(bd.cumulativeReturn*100,2)+'%</div></div><div class=\"card\"><div class=\"label\">Max DD</div><div class=\"value\">'+n(bd.maxDrawdown*100,2)+'%</div></div><div class=\"card\"><div class=\"label\">Sharpe</div><div class=\"value\">'+n(bd.sharpe,2)+'</div></div><div class=\"card\"><div class=\"label\">Profit Factor</div><div class=\"value\">'+n(bd.profitFactor,2)+'</div></div></div>';}else{$('backtest').innerHTML='<div class=\"error\">回测失败</div>';}}catch(_){if(requestId===loadSeq)$('backtest').innerHTML='<div class=\"error\">回测暂时不可用</div>';}",
+"  }catch(e){if(requestId===loadSeq)$('error').textContent=e.message||String(e)}",
 "}",
-"$('refresh').onclick=load;$('searchBtn').onclick=searchPairs;$('symbol').addEventListener('input',()=>{if($('symbol').value.trim().length>=2)searchPairs()});$('symbol').addEventListener('focus',()=>{if($('symbol').value.trim().length>=2)searchPairs()});$('symbol').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();searchPairs()}});document.addEventListener('click',e=>{if(!e.target.closest('.searchBox'))hideSearch()});load();",
+"$('refresh').onclick=load;$('searchBtn').onclick=()=>{clearTimeout(searchTimer);searchPairs()};$('symbol').addEventListener('input',()=>{clearTimeout(searchTimer);const q=$('symbol').value.trim();if(q.length<2){searchRequestId++;hideSearch();return;}searchTimer=setTimeout(searchPairs,300)});$('symbol').addEventListener('focus',()=>{if($('symbol').value.trim().length>=2)searchPairs()});$('symbol').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();clearTimeout(searchTimer);searchPairs()}});document.addEventListener('click',e=>{if(!e.target.closest('.searchBox'))hideSearch()});load();",
 "</script>",
 "</body>",
 "</html>"
@@ -934,8 +994,8 @@ async function handlePairs(url) {
     if (base === q && ["USD", "USDT", "USDC", "EUR"].includes(quote)) score += 5000;
 
     results.push({
-      symbol: key,
-      pair: item.altname || key,
+      symbol: item.altname || key,
+      pair: key,
       display: item.wsname || item.altname || key,      score
     });
   }
@@ -1056,7 +1116,7 @@ async function handleRegime(url) {
   });
 }
 
-function runBacktest(candles) {
+function runBacktest(candles, interval = "1H") {
   if (candles.length < 220) {
     return {
       trades: 0,
@@ -1084,12 +1144,14 @@ function runBacktest(candles) {
     const price = candles[i].close;
 
     if (!inPosition && vote.score >= 3) {
+      if (i + 1 >= candles.length) continue;
       inPosition = true;
-      entry = price;      continue;
+      entry = candles[i + 1].open;      continue;
     }
 
     if (inPosition && vote.score <= 0) {
-      const pct = ((price - entry) / entry) - 0.001;
+      if (i + 1 >= candles.length) continue;
+      const pct = (candles[i + 1].open * 0.999) / (entry * 1.001) - 1;
       equity *= 1 + pct;
       returns.push(pct);
 
@@ -1106,7 +1168,7 @@ function runBacktest(candles) {
 
   if (inPosition) {
     const price = candles.at(-1).close;
-    const pct = ((price - entry) / entry) - 0.001;
+    const pct = (price * 0.999) / (entry * 1.001) - 1;
     equity *= 1 + pct;
     returns.push(pct);
 
@@ -1132,8 +1194,8 @@ function runBacktest(candles) {
     winRate: n ? wins.length / n : 0,
     cumulativeReturn: equity - 1,
     maxDrawdown,
-    sharpe: deviation ? avg / deviation * Math.sqrt(365) : 0,
-    profitFactor: grossLoss ? grossProfit / grossLoss : 0
+    sharpe: deviation ? avg / deviation * Math.sqrt(interval === "5m" ? 365 * 24 * 12 : interval === "15m" ? 365 * 24 * 4 : interval === "1H" ? 365 * 24 : interval === "4H" ? 365 * 6 : interval === "8H" ? 365 * 3 : interval === "1D" ? 365 : 52) : 0,
+    profitFactor: grossLoss ? grossProfit / grossLoss : (grossProfit > 0 ? Infinity : 0)
   };
 }
 
@@ -1150,7 +1212,7 @@ async function handleBacktest(url) {
     interval,
     method: "baseline_rule_backtest_v3",
     fee: 0.001,
-    ...runBacktest(rows)
+    ...runBacktest(rows, interval)
   });
 }
 
