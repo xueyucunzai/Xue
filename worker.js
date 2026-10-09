@@ -1456,6 +1456,7 @@ async function handlePredict(url, env) {
 
   const predictions = calculateHistoricalForecast(closedRows, horizonsByInterval[interval], interval);
   let historySaved = false;
+  let historyError = env && env.MY_BINDING ? null : "D1 binding MY_BINDING is unavailable";
   if (env && env.MY_BINDING) {
     try {
       await env.MY_BINDING.prepare(
@@ -1474,7 +1475,8 @@ async function handlePredict(url, env) {
         })
       ).run();
       historySaved = true;
-    } catch (_) {
+    } catch (error) {
+      historyError = String(error && error.message ? error.message : error);
       // Keep the prediction API available if history persistence fails.
     }
   }
@@ -1490,6 +1492,7 @@ async function handlePredict(url, env) {
     currentScore: vote.score,
     risk: calculateRisk(indicators),
     historySaved,
+    historyError,
     predictionType: "historical_baseline_not_calibrated_forecast",
     predictions,
     note: "Kraken Spot OHLC returns at most 720 recent entries; older candles cannot be retrieved through this endpoint. Historical returns are an unconditional baseline, not calibrated future probabilities, and sequential samples may be dependent. Limited samples are not reliable forecast confidence."
