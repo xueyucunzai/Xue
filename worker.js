@@ -56,6 +56,7 @@ function displaySymbol(pair) {
 }
 
 function intervalToKraken(interval) {
+  if (!TIMEFRAMES.includes(interval)) throw new Error("Unsupported interval: " + interval);
   return {
     "5m": 5,
     "15m": 15,
@@ -531,7 +532,7 @@ function calculateOBV(rows) {
 }
 
 function calculateOBVTrend(rows) {
-  if (!rows || rows.length < 22) return "neutral";
+  if (!rows || rows.length < 41) return "neutral";
 
   const recent = calculateOBV(rows.slice(-21));
   const previous = calculateOBV(rows.slice(-41, -20));
@@ -543,7 +544,7 @@ function calculateOBVTrend(rows) {
 }
 
 function calculateIndicators(rows) {
-  if (!rows || !rows.length) {
+  if (!Array.isArray(rows) || !rows.length) {
     throw new Error("没有K线数据");
   }
 
@@ -733,7 +734,9 @@ function calculateVote(indicators) {
 }
 
 function calculateRisk(indicators) {
-  if (indicators.atrPercent === null) return "UNKNOWN";
+  // ATR 缺失时继续使用其他风险指标，不提前返回 UNKNOWN。
+  const hasRiskData = [indicators.atrPercent, indicators.bollWidth, indicators.adx, indicators.rsi14].some(v => v !== null && v !== undefined && Number.isFinite(Number(v)));
+  if (!hasRiskData) return "UNKNOWN";
 
   const highVolatility = indicators.atrPercent >= 4;
   const wideBollinger = indicators.bollWidth !== null && indicators.bollWidth >= 12;
@@ -794,6 +797,34 @@ function calculateAlignment(items) {
     consistency,
     directionConsistency
   };
+}
+
+function calculateHistoricalForecast(candles, horizons, interval) {
+  return horizons.filter(horizon => Number.isInteger(horizon) && horizon > 0).map(horizon => {
+    const returns = [];
+    const start = Math.max(0, candles.length - 400 * horizon - horizon);
+    for (let i = start; i + horizon < candles.length; i += horizon) {
+      const entry = candles[i].close;
+      const future = candles[i + horizon].close;
+      if (Number.isFinite(entry) && entry > 0 && Number.isFinite(future) && future > 0) {
+        returns.push((future / entry - 1) * 100);
+      }
+    }
+    returns.sort((a, b) => a - b);
+    const quantile = p => returns.length ? returns[Math.floor((returns.length - 1) * p)] : null;
+    return {
+      horizonBars: horizon,
+      horizonMinutes: horizon * ({ "5m": 5, "15m": 15, "1H": 60, "4H": 240, "8H": 480, "1D": 1440, "1W": 10080 }[interval] || 60),
+      samples: returns.length,
+      sampleStatus: returns.length < 20 ? "insufficient_sample" : returns.length < 100 ? "limited_sample" : "baseline_sample_100_plus",
+      historicalDirection: returns.length >= 20 ? (returns.filter(x => x > 0).length / returns.length >= 0.55 ? "UP_BIAS" : returns.filter(x => x < 0).length / returns.length >= 0.55 ? "DOWN_BIAS" : "MIXED") : "INSUFFICIENT_DATA",
+      historicalUpRate: returns.length >= 20 ? returns.filter(x => x > 0).length / returns.length : null,
+      medianReturnPct: returns.length >= 20 ? quantile(0.5) : null,
+      lowReturnPct: returns.length >= 20 ? quantile(0.1) : null,
+      highReturnPct: returns.length >= 20 ? quantile(0.9) : null,
+      basis: "historical_unconditional_baseline"
+    };
+  });
 }
 
 async function analyzeTimeframe(pair, interval) {
@@ -945,7 +976,7 @@ function buildHTML() {
 "    $('groups').innerHTML=['short','medium','long'].map(g=>{const x=d.groups[g];return '<span class=\"pill\">'+(g==='short'?'短期':g==='medium'?'中期':'长期')+'：'+x.label+' · 净分 '+x.netScore+' · 方向一致 '+x.directionConsistency+'% · 强度 '+x.consistency+'%</span>'}).join('');",
 "    const i=c.indicators;",
 "    const fields=[['EMA20',i.ema20],['EMA50',i.ema50],['EMA200',i.ema200],['RSI14',i.rsi14],['MACD',i.macd],['MACD Histogram',i.macdHistogram],['KDJ K',i.k],['KDJ D',i.d],['KDJ J',i.j],['Boll Middle',i.bollMiddle],['Boll Upper',i.bollUpper],['Boll Lower',i.bollLower],['ATR14',i.atr14],['ATR %',i.atrPercent],['Volume Ratio',i.volumeRatio],['ADX',i.adx],['+DI',i.plusDI],['-DI',i.minusDI],['OBV',i.obv],['OBV Trend',i.obvTrend]];",
-"    $('indicators').innerHTML=fields.map(x=>'<div class=\"card\"><div class=\"label\">'+x[0]+'</div><div class=\"value\">'+(x[0]==='OBV Trend'?String(x[1]||'neutral').toUpperCase():n(x[1],2))+'</div></div>').join(''); $('voteReasons').innerHTML=(c.reasons||[]).map((r,idx)=>'<div class=\"reason\"><span>Vote '+(idx+1)+'</span><span>'+esc(r)+'</span></div>').join('')||'<div class=\"small\">暂无判断依据</div>'; $('regime').innerHTML='<div class=\"grid\"><div class=\"card\"><div class=\"label\">1D 市场状态</div><div class=\"value\" id=\"regimeValue\">加载中</div></div><div class=\"card\"><div class=\"label\">整体多周期</div><div class=\"value\">'+esc(d.alignment.label)+'</div></div></div>'; $('backtest').innerHTML='<div class=\"small\">正在计算基准回测...</div>'; $('rawData').textContent=JSON.stringify(c.indicators,null,2); try{const rr=await fetch('/api/regime?pair='+encodeURIComponent(d.pair));const rd=await rr.json();if(requestId!==loadSeq)return;$('regimeValue').textContent=rd.regime||'—';}catch(_){if(requestId===loadSeq)$('regimeValue').textContent='—';} try{const br=await fetch('/api/backtest?pair='+encodeURIComponent(d.pair)+'&interval=1H');const bd=await br.json();if(requestId!==loadSeq)return;if(br.ok&&bd.status==='ok'){$('backtest').innerHTML='<div class=\"grid\"><div class=\"card\"><div class=\"label\">Trades</div><div class=\"value\">'+n(bd.trades,0)+'</div></div><div class=\"card\"><div class=\"label\">Win Rate</div><div class=\"value\">'+n(bd.winRate*100,1)+'%</div></div><div class=\"card\"><div class=\"label\">Return</div><div class=\"value\">'+n(bd.cumulativeReturn*100,2)+'%</div></div><div class=\"card\"><div class=\"label\">Max DD</div><div class=\"value\">'+n(bd.maxDrawdown*100,2)+'%</div></div><div class=\"card\"><div class=\"label\">Sharpe</div><div class=\"value\">'+n(bd.sharpe,2)+'</div></div><div class=\"card\"><div class=\"label\">Profit Factor</div><div class=\"value\">'+n(bd.profitFactor,2)+'</div></div></div>';}else{$('backtest').innerHTML='<div class=\"error\">回测失败</div>';}}catch(_){if(requestId===loadSeq)$('backtest').innerHTML='<div class=\"error\">回测暂时不可用</div>';}",
+"    $('indicators').innerHTML=fields.map(x=>'<div class=\"card\"><div class=\"label\">'+x[0]+'</div><div class=\"value\">'+(x[0]==='OBV Trend'?String(x[1]||'neutral').toUpperCase():n(x[1],2))+'</div></div>').join(''); $('voteReasons').innerHTML=(c.reasons||[]).map((r,idx)=>'<div class=\"reason\"><span>Vote '+(idx+1)+'</span><span>'+esc(r)+'</span></div>').join('')||'<div class=\"small\">暂无判断依据</div>'; $('regime').innerHTML='<div class=\"grid\"><div class=\"card\"><div class=\"label\">1D 市场状态</div><div class=\"value\" id=\"regimeValue\">加载中</div></div><div class=\"card\"><div class=\"label\">整体多周期</div><div class=\"value\">'+esc(d.alignment.label)+'</div></div></div>'; $('backtest').innerHTML='<div class=\"small\">正在计算基准回测...</div>'; $('rawData').textContent=JSON.stringify(c.indicators,null,2); try{const rr=await fetch('/api/regime?pair='+encodeURIComponent(d.pair));const rd=await rr.json();if(requestId!==loadSeq)return;$('regimeValue').textContent=rd.regime||'—';}catch(_){if(requestId===loadSeq)$('regimeValue').textContent='—';} try{const br=await fetch('/api/backtest?pair='+encodeURIComponent(d.pair)+'&interval=1H');const bd=await br.json();if(requestId!==loadSeq)return;if(br.ok&&bd.status==='ok'&&bd.backtestStatus==='insufficient_data'){$('backtest').innerHTML='<div class=\"error\">历史数据不足（少于220根K线），暂无法进行有效回测</div>';}else if(br.ok&&bd.status==='ok'){$('backtest').innerHTML='<div class=\"grid\"><div class=\"card\"><div class=\"label\">Trades</div><div class=\"value\">'+n(bd.trades,0)+'</div></div><div class=\"card\"><div class=\"label\">Win Rate</div><div class=\"value\">'+n(bd.winRate*100,1)+'%</div></div><div class=\"card\"><div class=\"label\">Return</div><div class=\"value\">'+n(bd.cumulativeReturn*100,2)+'%</div></div><div class=\"card\"><div class=\"label\">Max DD</div><div class=\"value\">'+n(bd.maxDrawdown*100,2)+'%</div></div><div class=\"card\"><div class=\"label\">Sharpe</div><div class=\"value\">'+n(bd.sharpe,2)+'</div></div><div class=\"card\"><div class=\"label\">Profit Factor</div><div class=\"value\">'+n(bd.profitFactor,2)+'</div></div></div>';}else{$('backtest').innerHTML='<div class=\"error\">回测失败</div>';}}catch(_){if(requestId===loadSeq)$('backtest').innerHTML='<div class=\"error\">回测暂时不可用</div>';}",
 "  }catch(e){if(requestId===loadSeq)$('error').textContent=e.message||String(e)}",
 "}",
 "$('refresh').onclick=load;$('searchBtn').onclick=()=>{clearTimeout(searchTimer);searchPairs()};$('symbol').addEventListener('input',()=>{clearTimeout(searchTimer);const q=$('symbol').value.trim();if(q.length<2){searchRequestId++;hideSearch();return;}searchTimer=setTimeout(searchPairs,300)});$('symbol').addEventListener('focus',()=>{if($('symbol').value.trim().length>=2)searchPairs()});$('symbol').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();clearTimeout(searchTimer);searchPairs()}});document.addEventListener('click',e=>{if(!e.target.closest('.searchBox'))hideSearch()});load();",
@@ -982,7 +1013,7 @@ async function handlePairs(url) {
       item.quote
     ].join(" ").toUpperCase();
 
-    if (!text.includes(q)) continue;
+    if (!text.includes(q) && !(q === "BTC" && text.includes("XBT")) && !(q === "BTCUSDT" && text.includes("XBTUSDT"))) continue;
 
     let score = 0;
     const base = String(item.base || "").toUpperCase();
@@ -990,7 +1021,7 @@ async function handlePairs(url) {
 
     if (key.toUpperCase() === q) score += 10000;
     if (String(item.altname || "").toUpperCase() === q) score += 10000;
-    if (base === q) score += 8000;
+    if (base === q || (q === "BTC" && base.includes("XBT"))) score += 8000;
     if (base === q && ["USD", "USDT", "USDC", "EUR"].includes(quote)) score += 5000;
 
     results.push({
@@ -1119,6 +1150,7 @@ async function handleRegime(url) {
 function runBacktest(candles, interval = "1H") {
   if (candles.length < 220) {
     return {
+      backtestStatus: "insufficient_data",
       trades: 0,
       winRate: 0,
       cumulativeReturn: 0,
@@ -1199,6 +1231,42 @@ function runBacktest(candles, interval = "1H") {
   };
 }
 
+async function handlePredict(url) {
+  const pair = normalizeSymbol(url.searchParams.get("pair") || "XBTUSD");
+  const interval = url.searchParams.get("interval") || "1H";
+  if (!TIMEFRAMES.includes(interval)) return errorResponse("Unsupported interval: " + interval, 400);
+
+  const rows = await fetchKraken(pair, interval, 720);
+  if (!Array.isArray(rows) || !rows.length) return errorResponse("Kraken returned no candle data for prediction", 503);
+  if (rows.some(row => !row || ![row.time, row.open, row.high, row.low, row.close, row.volume].every(Number.isFinite) || row.volume < 0 || row.open <= 0 || row.high <= 0 || row.low <= 0 || row.close <= 0 || row.high < row.low)) return errorResponse("Kraken returned invalid candle values for prediction", 502);
+  const indicators = calculateIndicators(rows);
+  const vote = calculateVote(indicators);
+  const horizonsByInterval = {
+    "5m": [3, 6, 12, 24],
+    "15m": [2, 4, 8, 16],
+    "1H": [1, 4, 8, 24, 72, 168],
+    "4H": [1, 2, 6, 18, 42],
+    "8H": [1, 3, 9, 21],
+    "1D": [1, 3, 7, 14],
+    "1W": [1, 2, 4, 8]
+  };
+
+  return json({
+    status: "ok",
+    source: "kraken",
+    symbol: displaySymbol(pair),
+    pair,
+    interval,
+    price: indicators.price,
+    currentSignal: vote.vote,
+    currentScore: vote.score,
+    risk: calculateRisk(indicators),
+    predictionType: "historical_baseline_not_calibrated_forecast",
+    predictions: calculateHistoricalForecast(rows, horizonsByInterval[interval], interval),
+    note: "Historical return distribution is an unconditional baseline, not a calibrated future probability. Sequential historical samples may still be statistically dependent. Limited samples should not be treated as reliable forecast confidence."
+  });
+}
+
 async function handleBacktest(url) {
   const pair = normalizeSymbol(url.searchParams.get("pair") || "XBTUSD");
   const interval = url.searchParams.get("interval") || "1H";
@@ -1276,6 +1344,7 @@ async function handleRequest(request) {
     if (url.pathname === "/api/indicators") return handleIndicators(url);
     if (url.pathname === "/api/vote") return handleVote(url);
     if (url.pathname === "/api/regime") return handleRegime(url);
+    if (url.pathname === "/api/predict") return handlePredict(url);
     if (url.pathname === "/api/backtest") return handleBacktest(url);
 
     return errorResponse("Not Found", 404);
