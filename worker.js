@@ -1468,6 +1468,7 @@ async function handlePredict(url, env) {
         indicators.price,
         JSON.stringify({
           currentSignal: vote.vote,
+          referenceCandleTime: closedRows.at(-1).time,
           currentScore: vote.score,
           risk: calculateRisk(indicators),
           predictionType: "historical_baseline_not_calibrated_forecast",
@@ -1559,6 +1560,76 @@ async function handleAnalysis(url) {
   });
 }
 
+async function handleDiagnostics(env) {
+  const checks = {
+    worker: { status: "ok", detail: "HTTP handler is responding" },
+    kraken: { status: "unknown" },
+    d1: { status: "unknown" },
+    scheduled: {
+      status: "manual_check_required",
+      detail: "HTTP diagnostics cannot confirm Cron invocation; inspect Cloudflare Cron Triggers and Observability logs."
+    }
+  };
+
+  try {
+    const rows = await fetchKraken("XBTUSD", "5m", 2);
+    if (Array.isArray(rows) && rows.length > 0) {
+      checks.kraken = {
+        status: "ok",
+        pair: "XBTUSD",
+        interval: "5m",
+        candlesReturned: rows.length,
+        latestCandleTime: rows[rows.length - 1].time
+      };
+    } else {
+      checks.kraken = { status: "error", reason: "no_candles_returned" };
+    }
+  } catch (error) {
+    checks.kraken = {
+      status: "error",
+      reason: "request_failed",
+      detail: String(error && error.message || error).slice(0, 120)
+    };
+  }
+
+  if (!env || !env.MY_BINDING) {
+    checks.d1 = { status: "error", reason: "binding_unavailable" };
+  } else {
+    try {
+      const result = await env.MY_BINDING.prepare(
+        "SELECT COUNT(*) AS total, SUM(CASE WHEN evaluation_status = 'pending' THEN 1 ELSE 0 END) AS pending FROM prediction_history"
+      ).first();
+      if (!result) {
+        checks.d1 = { status: "error", reason: "query_returned_no_result" };
+      } else {
+        checks.d1 = {
+          status: "ok",
+          historyRecords: Number(result.total || 0),
+          pendingEvaluations: Number(result.pending || 0)
+        };
+      }
+    } catch (error) {
+      checks.d1 = {
+        status: "error",
+        reason: "query_failed",
+        detail: String(error && error.message || error).slice(0, 120)
+      };
+    }
+  }
+
+  const coreChecksPassed = checks.worker.status === "ok" &&
+    checks.kraken.status === "ok" &&
+    checks.d1.status === "ok";
+
+  return json({
+    status: coreChecksPassed ? "ok" : "degraded",
+    service: "QuantVote",
+    version: VERSION,
+    checkedAt: new Date().toISOString(),
+    checks
+  }, coreChecksPassed ? 200 : 503);
+}
+
 async function handleRequest(request, env) {
   const url = new URL(request.url);
 
@@ -1600,6 +1671,7 @@ async function handleRequest(request, env) {
       });
     }
 
+    if (url.pathname === "/api/diagnostics") return handleDiagnostics(env);
     if (url.pathname === "/api/pairs") return handlePairs(url);
     if (url.pathname === "/api/market") return handleMarket(url);
     if (url.pathname === "/api/analysis") return handleAnalysis(url);
@@ -1616,8 +1688,104 @@ async function handleRequest(request, env) {
   }
 }
 
+function evaluatePredictionHorizon( referenceTime, referencePrice, intervalSeconds, horizonBars, candles, nowSeconds = Math.floor(Date.now() / 1000)) {
+  if (![referenceTime, referencePrice, intervalSeconds, horizonBars].every(Number.isFinite) ||
+      referenceTime <= 0 || referencePrice <= 0 || intervalSeconds <= 0 || horizonBars <= 0 ||
+      !Array.isArray(candles)) {
+    return { status: "unavailable", reason: "invalid_inputs" };
+  }
+  const targetCandleTime = referenceTime + horizonBars * intervalSeconds;
+  if (nowSeconds < targetCandleTime + intervalSeconds) {
+    return { status: "pending", targetCandleTime, reason: "target_candle_not_closed" };
+  }
+  const target = candles.find(c => c && c.time === targetCandleTime && Number.isFinite(c.close) && c.close > 0);
+  if (!target) {
+    return { status: "unavailable", targetCandleTime, reason: "target_candle_missing" };
+  }
+  return {
+    status: "evaluated",
+    targetCandleTime,
+    actualClose: target.close,
+    actualReturnPct: (target.close / referencePrice - 1) * 100
+  };
+}
+
+
+function mergePredictionOutcomes(existingOutcome, predictions, referenceTime, referencePrice, intervalSeconds, candles, nowSeconds = Math.floor(Date.now() / 1000)) {
+  const prior = existingOutcome && typeof existingOutcome === "object" ? existingOutcome : {};
+  const horizons = Array.isArray(predictions) ? predictions : [];
+  const results = { ...prior };
+  for (const horizon of horizons) {
+    if (!horizon || !Number.isFinite(horizon.horizonBars)) continue;
+    const key = String(horizon.horizonBars);
+    const previous = results[key];
+    if (previous && (previous.status === "evaluated" || previous.status === "unavailable")) continue;
+    const result = evaluatePredictionHorizon(referenceTime, referencePrice, intervalSeconds, horizon.horizonBars, candles, nowSeconds);
+    results[key] = {
+      ...result,
+      horizonBars: horizon.horizonBars,
+      horizonMinutes: horizon.horizonMinutes,
+      historicalRangeCovered: result.status === "evaluated" &&
+        Number.isFinite(horizon.lowReturnPct) && Number.isFinite(horizon.highReturnPct)
+          ? result.actualReturnPct >= horizon.lowReturnPct && result.actualReturnPct <= horizon.highReturnPct
+          : null
+    };
+  }
+  const statuses = horizons.filter(h => h && Number.isFinite(h.horizonBars)).map(h => results[String(h.horizonBars)]?.status);
+  const completed = statuses.length > 0 && statuses.every(status => status === "evaluated" || status === "unavailable");
+  return { outcome: results, evaluationStatus: completed ? "completed" : "pending" };
+}
+
+async function evaluatePendingPredictionHistory(env) {
+  if (!env || !env.MY_BINDING) return { status: "skipped", processed: 0 };
+  const selected = await env.MY_BINDING.prepare("SELECT id, pair, interval, reference_price, forecast_json, outcome_json FROM prediction_history WHERE evaluation_status = ? ORDER BY id ASC LIMIT 10").bind("pending").all();
+  const records = selected && Array.isArray(selected.results) ? selected.results : [];
+  const intervalSecondsMap = { "5m": 300, "15m": 900, "1H": 3600, "4H": 14400, "8H": 28800, "1D": 86400, "1W": 604800 };
+  const intervalMinutesMap = { "5m": 5, "15m": 15, "1H": 60, "4H": 240, "8H": 480, "1D": 1440, "1W": 10080 };
+  const checked = [];
+  let processed = 0;
+  for (const record of records) {
+    try {
+      let forecast = null;
+      let priorOutcome = {};
+      try { forecast = JSON.parse(record.forecast_json || "{}"); } catch (_) {}
+      try { const parsedOutcome = JSON.parse(record.outcome_json || "{}"); priorOutcome = parsedOutcome && typeof parsedOutcome === "object" && !Array.isArray(parsedOutcome) ? parsedOutcome : {}; } catch (_) {}
+      const referenceTime = forecast && forecast.referenceCandleTime;
+      const predictions = forecast && forecast.predictions;
+      const intervalSeconds = intervalSecondsMap[record.interval];
+      const validReference = Number.isFinite(referenceTime) && referenceTime > 0 &&
+        Number.isFinite(record.reference_price) && record.reference_price > 0 &&
+        Number.isFinite(intervalSeconds) && Array.isArray(predictions) && predictions.length > 0;
+      let merged;
+      if (!validReference) {
+        merged = { outcome: { status: "unassessable", reason: "missing_or_invalid_reference_data" }, evaluationStatus: "unassessable" };
+      } else {
+        const rows = await fetchKraken(record.pair, record.interval, 720);
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        const closedRows = (Array.isArray(rows) ? rows : []).filter(c => c && Number.isFinite(c.time) &&
+          Number.isFinite(c.close) && c.close > 0 && c.time + intervalMinutesMap[record.interval] * 60 <= nowSeconds);
+        merged = mergePredictionOutcomes(priorOutcome, predictions, referenceTime, record.reference_price, intervalSeconds, closedRows, nowSeconds);
+      }
+      const updated = await env.MY_BINDING.prepare("UPDATE prediction_history SET outcome_json = ?, evaluation_status = ? WHERE id = ? AND evaluation_status = ?").bind(JSON.stringify(merged.outcome), merged.evaluationStatus, record.id, "pending").run();
+      const saved = Boolean(updated && updated.success && updated.meta && updated.meta.changes > 0);
+      if (saved) processed += 1;
+      checked.push({ id: record.id, interval: record.interval, status: saved ? merged.evaluationStatus : "update_not_confirmed" });
+    } catch (error) {
+      checked.push({ id: record.id, status: "error", reason: String(error && error.message || error).slice(0, 160) });
+    }
+  }
+  return { status: "checked", processed, selected: records.length, checked };
+}
+
 export default {
   async fetch(request, env) {
     return handleRequest(request, env);
+  },
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(
+      evaluatePendingPredictionHistory(env).catch(error => {
+        console.error("QuantVote scheduled history evaluation failed:", error);
+      })
+    );
   }
 };
