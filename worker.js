@@ -94,42 +94,45 @@ async function queueKrakenRequest(task) {
 
 function aggregate8H(rows) {
   const buckets = new Map();
+
   for (const r of rows) {
+    if (!r || !Number.isFinite(r.time)) continue;
+
     const bucket = Math.floor(r.time / 28800) * 28800;
-    let a = buckets.get(bucket);
-    if (!a) {
-      a = {
-        time: bucket,
-        open: r.open,
-        high: r.high,
-        low: r.low,
-        close: r.close,
-        vwapValue: r.vwap * r.volume,
-        volume: r.volume,
-        count: r.count
-      };
-      buckets.set(bucket, a);
-    } else {
-      a.high = Math.max(a.high, r.high);
-      a.low = Math.min(a.low, r.low);
-      a.close = r.close;
-      a.vwapValue += r.vwap * r.volume;
-      a.volume += r.volume;
-      a.count += r.count;
+    let candles = buckets.get(bucket);
+
+    if (!candles) {
+      candles = new Map();
+      buckets.set(bucket, candles);
     }
+
+    // A timestamp may only contribute once to an 8H candle.
+    if (!candles.has(r.time)) candles.set(r.time, r);
   }
-  return [...buckets.values()]
-    .sort((a, b) => a.time - b.time)
-    .map(r => ({
-      time: r.time,
-      open: r.open,
-      high: r.high,
-      low: r.low,
-      close: r.close,
-      vwap: r.volume ? r.vwapValue / r.volume : r.close,
-      volume: r.volume,
-      count: r.count
-    }));
+
+  return [...buckets.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .flatMap(([bucket, candles]) => {
+      const first = candles.get(bucket);
+      const second = candles.get(bucket + 14400);
+
+      // An 8H candle is valid only when both expected 4H candles exist.
+      if (!first || !second) return [];
+
+      const volume = first.volume + second.volume;
+      return [{
+        time: bucket,
+        open: first.open,
+        high: Math.max(first.high, second.high),
+        low: Math.min(first.low, second.low),
+        close: second.close,
+        vwap: volume
+          ? (first.vwap * first.volume + second.vwap * second.volume) / volume
+          : second.close,
+        volume,
+        count: first.count + second.count
+      }];
+    });
 }
 
 function aggregate1W(rows) {
