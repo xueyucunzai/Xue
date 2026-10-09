@@ -1134,10 +1134,10 @@ function buildHTML() {
 "    if(!r.ok||d.status==='error')throw new Error(d.error||'请求失败');",
 "    const c=d.current;if(!c||!c.indicators)throw new Error('所有周期数据均不可用，请稍后重试');",
 "    forecastPair=d.pair;loadForecast(forecastPair,requestId);",
-"    const failedCount=Array.isArray(d.timeframes)?d.timeframes.filter(x=>x.status==='error').length:0;if(failedCount>0)$('error').textContent='部分周期数据不可用（'+failedCount+'/'+(Array.isArray(d.timeframes)?d.timeframes.length:7)+'），其余可用周期仍可查看。',",
+"    const failedCount=Array.isArray(d.timeframes)?d.timeframes.filter(x=>x.status==='error').length:0;if(failedCount>0)$('error').textContent='部分周期数据不可用（'+failedCount+'/'+(Array.isArray(d.timeframes)?d.timeframes.length:7)+'），其余可用周期仍可查看。';",
 "    $('summary').innerHTML=" +
 "'<div class=\"card\"><div class=\"label\">当前</div><div class=\"value\">'+d.symbol+'</div></div>'+" +
-"'<div class=\"card\"><div class=\"label\">标的价格</div><div class=\"value\">'+n(d.price,2)+'</div></div>'+" +
+"'<div class=\"card\"><div class=\"label\">标的价格</div><div class=\"value\">'+n(d.price??c.price,2)+'</div></div>'+" +
 "'<div class=\"card\"><div class=\"label\">'+esc(c.interval)+' QuantVote</div><div class=\"value '+cls(c.vote)+'\">'+c.vote+'</div></div>'+" +
 "'<div class=\"card\"><div class=\"label\">'+esc(c.interval)+' Score</div><div class=\"value '+cls(c.vote)+'\">'+c.score+' / 7</div></div>'+" +
 "'<div class=card><div class=label>多周期确认 Vote（评分非概率）</div><div class=value>'+(d.multiTimeframeVote&&d.multiTimeframeVote.vote||'NO_DATA')+' · '+n(d.multiTimeframeVote&&d.multiTimeframeVote.score,2)+'</div></div>' +",
