@@ -1151,6 +1151,7 @@ async function handleMulti(url) {
       atrPercent: x.atrPercent
     })),
     alignment: data.alignment,
+    multiTimeframeVote: data.multiTimeframeVote,
     groups: data.groups
   });
 }
