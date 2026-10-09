@@ -1002,7 +1002,7 @@ function buildHTML() {
 "'<div class=\"card\"><div class=\"label\">标的价格</div><div class=\"value\">'+n(d.price,2)+'</div></div>'+" +
 "'<div class=\"card\"><div class=\"label\">1H QuantVote</div><div class=\"value '+cls(c.vote)+'\">'+c.vote+'</div></div>'+" +
 "'<div class=\"card\"><div class=\"label\">1H Score</div><div class=\"value '+cls(c.vote)+'\">'+c.score+' / 7</div></div>'+" +
-"'<div class=\"card\"><div class=\"label\">多周期确认 Vote</div><div class=\"value '+cls(d.multiTimeframeVote&&d.multiTimeframeVote.vote)+'\">'+(d.multiTimeframeVote&&d.multiTimeframeVote.vote||'NO_DATA')+' · '+n(d.multiTimeframeVote&&d.multiTimeframeVote.score,2)+'</div></div>' +
+"'<div class=card><div class=label>多周期确认 Vote</div><div class=value>'+(d.multiTimeframeVote&&d.multiTimeframeVote.vote||'NO_DATA')+' · '+n(d.multiTimeframeVote&&d.multiTimeframeVote.score,2)+'</div></div>' +",
 "'<div class=\"card\"><div class=\"label\">风险</div><div class=\"value\">'+(c.risk||'UNKNOWN')+'</div></div>';",
 "    $('table').innerHTML='<table><thead><tr><th>周期</th><th>分类</th><th>价格</th><th>Score</th><th>Vote</th><th>Trend</th><th>RSI</th><th>ADX</th></tr></thead><tbody>'+d.timeframes.map(x=>'<tr><td>'+x.interval+'</td><td>'+x.groupLabel+'</td><td>'+n(x.price)+'</td><td class=\"'+cls(x.vote)+'\">'+x.score+'</td><td class=\"'+cls(x.vote)+'\">'+x.vote+'</td><td>'+x.trend+'</td><td>'+n(x.rsi,1)+'</td><td>'+n(x.adx,1)+'</td></tr>').join('')+'</tbody></table>';",
 "    $('groups').innerHTML=['short','medium','long'].map(g=>{const x=d.groups[g];return '<span class=\"pill\">'+(g==='short'?'短期':g==='medium'?'中期':'长期')+'：'+x.label+' · 净分 '+x.netScore+' · 方向一致 '+x.directionConsistency+'% · 强度 '+x.consistency+'%</span>'}).join('');",
