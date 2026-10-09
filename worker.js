@@ -44,6 +44,20 @@ function errorResponse(error, status = 500) {
   }, status);
 }
 
+function classifyKrakenError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/unknown asset pair|invalid pair|EQuery:.*asset pair/i.test(message)) {
+    return { code: "INVALID_PAIR", httpStatus: 400, message: "交易对无效或 Kraken 不支持该交易对" };
+  }
+  if (/rate limit|too many requests|EAPI:Rate limit exceeded|HTTP 429/i.test(message)) {
+    return { code: "RATE_LIMITED", httpStatus: 429, message: "Kraken 请求频率受限，请稍后重试" };
+  }
+  if (/没有返回K线数据|no candle data|returned no candle/i.test(message)) {
+    return { code: "NO_CANDLE_DATA", httpStatus: 503, message: "Kraken 暂无可用 K 线数据" };
+  }
+  return { code: "UPSTREAM_ERROR", httpStatus: 502, message: "Kraken 行情请求失败，请稍后重试" };
+}
+
 function normalizeSymbol(value) {
   let s = String(value || "XBTUSD").toUpperCase().replace(/[\s/_-]/g, "");
   if (s === "BTCUSD") s = "XBTUSD";
@@ -57,14 +71,16 @@ function displaySymbol(pair) {
 
 function intervalToKraken(interval) {
   if (!TIMEFRAMES.includes(interval)) throw new Error("Unsupported interval: " + interval);
-  return {
+  const minutes = {
     "5m": 5,
     "15m": 15,
     "1H": 60,
     "4H": 240,
     "1D": 1440,
     "1W": 10080
-  }[interval] || 60;
+  }[interval];
+  if (!minutes) throw new Error("Unsupported Kraken interval: " + interval);
+  return minutes;
 }
 
 function groupFor(interval) {
@@ -96,7 +112,20 @@ function aggregate8H(rows) {
   const buckets = new Map();
 
   for (const r of rows) {
-    if (!r || !Number.isFinite(r.time)) continue;
+    if (
+      !r ||
+      ![r.time, r.open, r.high, r.low, r.close, r.vwap, r.volume, r.count].every(Number.isFinite) ||
+      r.volume < 0 ||
+      r.open <= 0 ||
+      r.high <= 0 ||
+      r.low <= 0 ||
+      r.close <= 0 ||
+      r.high < r.low ||
+      r.high < r.open ||
+      r.high < r.close ||
+      r.low > r.open ||
+      r.low > r.close
+    ) continue;
 
     const bucket = Math.floor(r.time / 28800) * 28800;
     let candles = buckets.get(bucket);
@@ -106,12 +135,14 @@ function aggregate8H(rows) {
       buckets.set(bucket, candles);
     }
 
-    // A timestamp may only contribute once to an 8H candle.
+    // A timestamp may only contribute once to an 8H candle
     if (!candles.has(r.time)) candles.set(r.time, r);
   }
 
   return [...buckets.entries()]
     .sort((a, b) => a[0] - b[0])
+
+    .filter(([bucket]) => (bucket + 28800) * 1000 <= Date.now())
     .flatMap(([bucket, candles]) => {
       const first = candles.get(bucket);
       const second = candles.get(bucket + 14400);
@@ -159,6 +190,10 @@ function aggregate1W(rows) {
 
   return [...buckets.entries()]
     .sort((a, b) => a[0] - b[0])
+    .filter(([bucket, candles]) =>
+      (bucket + 604800) * 1000 <= Date.now() &&
+      Array.from({ length: 7 }, (_, day) => candles.has(bucket + day * 86400)).every(Boolean)
+    )
     .map(([bucket, candles]) => {
       const ordered = [...candles.values()].sort((a, b) => a.time - b.time);
       const first = ordered[0];
@@ -198,13 +233,14 @@ async function fetchKraken(symbol, interval, limit = 720) {
     return aggregate8H(source).slice(-limit);
   }
 
+  if (interval === "1W") {
+    const source = await fetchKraken(pair, "1D", Math.max(limit * 7 + 7, 720));
+    return aggregate1W(source).slice(-limit);
+  }
+
   const krakenInterval = intervalToKraken(interval);
   const cacheKey = pair + "|" + krakenInterval;
 
-  if (interval === "1W") {
-    const daily = await fetchKraken(pair, "1D", Math.max(limit * 7 + 7, 720));
-    return aggregate1W(daily).slice(-limit);
-  }
   const now = Date.now();
   const cached = OHLC_CACHE.get(cacheKey);
 
@@ -582,6 +618,23 @@ function calculateIndicators(rows) {
     throw new Error("没有K线数据");
   }
 
+  if (rows.some(row =>
+    !row ||
+    ![row.time, row.open, row.high, row.low, row.close, row.volume].every(Number.isFinite) ||
+    row.volume < 0 ||
+    row.open <= 0 ||
+    row.high <= 0 ||
+    row.low <= 0 ||
+    row.close <= 0 ||
+    row.high < row.low ||
+    row.high < row.open ||
+    row.high < row.close ||
+    row.low > row.open ||
+    row.low > row.close
+  )) {
+    throw new Error("K线数据包含无效价格或成交量");
+  }
+
   const closes = rows.map(x => x.close);
   const price = closes.at(-1);
 
@@ -882,7 +935,7 @@ function calculateHistoricalForecast(candles, horizons, interval) {
   return horizons.filter(horizon => Number.isInteger(horizon) && horizon > 0).map(horizon => {
     const returns = [];
     const start = Math.max(0, candles.length - 400 * horizon - horizon);
-    for (let i = start; i + horizon < candles.length; i += horizon) {
+    for (let i = start; i + horizon < candles.length; i++) {
       const entry = candles[i].close;
       const future = candles[i + horizon].close;
       if (Number.isFinite(entry) && entry > 0 && Number.isFinite(future) && future > 0) {
@@ -943,7 +996,33 @@ async function analyzeAll(pair) {
   const result = [];
 
   for (const interval of TIMEFRAMES) {
-    result.push(await analyzeTimeframe(pair, interval));
+    try {
+      result.push(await analyzeTimeframe(pair, interval));
+    } catch (error) {
+      result.push({
+        interval,
+        label: interval,
+        group: groupFor(interval),
+        groupLabel: groupLabel(groupFor(interval)),
+        status: "error",
+        error: error instanceof Error ? error.message : String(error),
+        errorCode: classifyKrakenError(error).code,
+        errorHttpStatus: classifyKrakenError(error).httpStatus,
+        price: null,
+        score: null,
+        vote: "ERROR",
+        trend: "unavailable",
+        rsi: null,
+        adx: null,
+        plusDI: null,
+        minusDI: null,
+        atrPercent: null,
+        votes: [],
+        reasons: [],
+        risk: "UNKNOWN",
+        indicators: null
+      });
+    }
   }
 
   const groups = {};
@@ -953,6 +1032,12 @@ async function analyzeAll(pair) {
     );
   }
 
+  const current =
+    result.find(x => x.interval === "1H" && x.status !== "error" && x.indicators) ||
+    result.find(x => x.status !== "error" && x.indicators) ||
+    result[0] ||
+    null;
+
   const data = {
     symbol: displaySymbol(pair),
     pair,
@@ -960,8 +1045,8 @@ async function analyzeAll(pair) {
     alignment: calculateAlignment(result),
     multiTimeframeVote: calculateMultiTimeframeVote(result),
     groups,
-    price: result.find(x => x.interval === "1H")?.price || result[0]?.price || null,
-    current: result.find(x => x.interval === "1H") || result[0] || null
+    price: current?.price ?? null,
+    current
   };
 
   ANALYSIS_CACHE.set(cacheKey, {
@@ -1020,11 +1105,12 @@ function buildHTML() {
 "<div class='controls'><div class='searchBox'><input id='symbol' value='BTCUSD' placeholder='搜索 BTC / ETH / SOL ...' autocomplete='off'><button id='searchBtn'>搜索</button><div id='searchResults' class='searchResults hidden'></div></div><button id='refresh'>刷新数据</button></div>",
 "<div id='error' class='error'></div>",
 "<div id='summary' class='grid'></div>",
+"<div class='section card'><div class='sectionTitle'>历史收益基准（非未来概率）</div><div class='small'>展示所选周期下的历史收益分布。历史上涨比例不等于未来上涨概率；样本不足时不展示统计值。</div><label for='forecastInterval'>统计周期</label><select id='forecastInterval'><option value='5m'>5m</option><option value='15m'>15m</option><option value='1H' selected>1H</option><option value='4H'>4H</option><option value='8H'>8H</option><option value='1D'>1D</option><option value='1W'>1W</option></select><div id='forecast'></div></div>",
 "<div class='section card'><div class='label'>多周期 QuantVote</div><div class='small'>短期：5m / 15m　中期：1H / 4H / 8H　长期：1D / 1W</div><div id='table'></div></div>",
 "<div class='section card'><div class='label'>周期一致性</div><div id='groups'></div></div>",
 "<div class='section card'><div class='sectionTitle'>Vote 判断依据</div><div class='controls'><label for='voteReasonInterval'>选择判断周期</label><select id='voteReasonInterval'><option value='15m'>15分钟（15m）</option><option value='1H' selected>1小时（1H）</option><option value='4H'>4小时（4H）</option><option value='8H'>8小时（8H）</option><option value='1D'>1天（1D）</option><option value='1W'>1周（1W）</option></select></div><div id='voteReasons'></div></div>",
 "<div class='section card'><div class='sectionTitle'>市场状态</div><div id='regime'></div></div>",
-"<div class='section card'><div class='sectionTitle'>回测</div><div id='backtest'></div></div>",
+"<div class='section card'><div class='sectionTitle'>基准策略历史回测</div><div class='small'>仅用于评估规则在历史行情中的表现，不会执行真实交易，也不代表未来收益保证。</div><label for='backtestInterval'>回测周期</label><select id='backtestInterval'><option value='5m'>5m</option><option value='15m'>15m</option><option value='1H' selected>1H</option><option value='4H'>4H</option><option value='8H'>8H</option><option value='1D'>1D</option><option value='1W'>1W</option></select><div id='backtest'></div></div>",
 "<div class='section card'><div class='sectionTitle'>1H 技术指标</div><div id='indicators' class='grid'></div></div>",
 "<div class='section card'><div class='sectionTitle'>原始指标数据</div><pre id='rawData' class='raw'></pre></div>",
 "</main>",
@@ -1032,35 +1118,38 @@ function buildHTML() {
 "const $=id=>document.getElementById(id);",
 "function cls(v){return String(v||'').toLowerCase().includes('bull')?'bull':String(v||'').toLowerCase().includes('bear')?'bear':'neutral'}",
 "function n(v,d=2){return v==null||!Number.isFinite(Number(v))?'—':Number(v).toFixed(d)}",
+"let forecastPair='XBTUSD';let forecastRequestSeq=0; async function loadForecast(pair,requestId){const forecastRequestId=++forecastRequestSeq;const box=$('forecast');if(!box)return;box.innerHTML='<div class=\"small\">正在读取历史收益基准...</div>';try{const interval=$('forecastInterval').value||'1H';const r=await fetch('/api/predict?pair='+encodeURIComponent(pair)+'&interval='+encodeURIComponent(interval));const d=await r.json();if(requestId!==loadSeq||forecastRequestId!==forecastRequestSeq)return;if(!r.ok||d.status!=='ok')throw new Error(d.error||'历史统计不可用');const rows=Array.isArray(d.predictions)?d.predictions:[];const statusLabel=s=>s==='insufficient_sample'?'样本不足':s==='limited_sample'?'有限样本':'100个以上样本';const directionLabel=s=>s==='UP_BIAS'?'历史偏上行':s==='DOWN_BIAS'?'历史偏下行':s==='MIXED'?'历史方向混合':'数据不足';const horizonLabel=p=>{const m=Number(p.horizonMinutes);const human=m>=10080&&m%10080===0?(m/10080)+'周':m>=1440&&m%1440===0?(m/1440)+'天':m>=60&&m%60===0?(m/60)+'小时':m+'分钟';return n(p.horizonBars,0)+'根K线（'+human+'）';};box.innerHTML='<div class=\"small\">'+esc(d.note||'历史基准，不是未来概率')+'</div><div class=\"small\">D1记录：'+(d.historySaved?'已保存':'未确认保存')+'</div>'+(rows.length?'<table><thead><tr><th>观察区间</th><th>样本数</th><th>样本状态</th><th>历史方向</th><th>历史上涨比例</th><th>历史中位收益</th><th>历史收益P10–P90</th></tr></thead><tbody>'+rows.map(p=>'<tr><td>'+horizonLabel(p)+'</td><td>'+n(p.samples,0)+'</td><td>'+statusLabel(p.sampleStatus)+'</td><td>'+directionLabel(p.historicalDirection)+'</td><td>'+n(p.historicalUpRate==null?null:p.historicalUpRate*100,1)+(p.historicalUpRate==null?'':'%')+'</td><td>'+n(p.medianReturnPct,2)+(p.medianReturnPct==null?'':'%')+'</td><td>'+n(p.lowReturnPct,2)+(p.lowReturnPct==null?'':'%')+' 至 '+n(p.highReturnPct,2)+(p.highReturnPct==null?'':'%')+'</td></tr>').join('')+'</tbody></table>':'<div class=\"small\">当前没有可展示的历史统计。</div>');}catch(e){if(requestId===loadSeq&&forecastRequestId===forecastRequestSeq)box.innerHTML='<div class=\"error\">'+esc(e.message||'历史统计暂不可用')+'</div>';}}",
 "function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\\\"/g,'&quot;').replace(/'/g,'&#39;')}",
 "function hideSearch(){ $('searchResults').classList.add('hidden'); $('searchResults').innerHTML=''; }",
 "function showSearch(items){ const box=$('searchResults'); if(!items.length){box.innerHTML='<div class=\\\"searchItem\\\"><div><div class=\\\"searchMain\\\">没有找到交易对</div><div class=\\\"searchSub\\\">请换一个币种名称或代码</div></div></div>';box.classList.remove('hidden');return;} box.innerHTML=items.map(x=>'<button type=\\\"button\\\" class=\\\"searchItem\\\" data-symbol=\\\"'+esc(x.symbol)+'\\\"><div><div class=\\\"searchMain\\\">'+esc(x.display||x.pair||x.symbol)+'</div><div class=\\\"searchSub\\\">'+esc(x.pair||x.symbol)+'</div></div><div class=\\\"searchSub\\\">选择</div></button>').join(''); box.classList.remove('hidden'); box.querySelectorAll('[data-symbol]').forEach(b=>b.onclick=()=>{ $('symbol').value=b.dataset.symbol; hideSearch(); load(); }); }",
-"let searchTimer=null; let searchRequestId=0; let loadSeq=0; async function searchPairs(){ const q=$('symbol').value.trim(); if(!q){searchRequestId++;hideSearch();return;} const requestId=++searchRequestId; try{ const r=await fetch('/api/pairs?q='+encodeURIComponent(q)); const d=await r.json(); if(requestId!==searchRequestId)return; if(!r.ok||d.status==='error') throw new Error(d.error||'搜索失败'); showSearch(d.results||[]); }catch(e){ if(requestId===searchRequestId)$('error').textContent=e.message||String(e); } }",
+"let searchTimer=null; let searchRequestId=0; let loadSeq=0; async function searchPairs(){ const q=$('symbol').value.trim(); hideSearch(); if(!q){searchRequestId++;return;} const requestId=++searchRequestId; try{ const r=await fetch('/api/pairs?q='+encodeURIComponent(q)); const d=await r.json(); if(requestId!==searchRequestId)return; if(!r.ok||d.status==='error') throw new Error(d.error||'搜索失败'); showSearch(d.results||[]); }catch(e){ if(requestId===searchRequestId)$('error').textContent=e.message||String(e); } }",
 "async function load(){",
 "  const raw=$('symbol').value.trim()||'BTCUSD';",
 "  const requestId=++loadSeq;",
-"  $('error').textContent='';",
+"  $('error').textContent='';$('summary').innerHTML='';$('table').innerHTML='';$('groups').innerHTML='';$('indicators').innerHTML='';$('rawData').textContent='';$('regime').innerHTML='';$('forecast').innerHTML='';$('backtest').textContent='正在计算所选周期的回测...';",
 "  try{",
 "    const r=await fetch('/api/analysis?symbol='+encodeURIComponent(raw));",
 "    const d=await r.json();",
 "    if(requestId!==loadSeq)return;",
 "    if(!r.ok||d.status==='error')throw new Error(d.error||'请求失败');",
-"    const c=d.current;if(!c)throw new Error('没有当前周期数据');",
+"    const c=d.current;if(!c||!c.indicators)throw new Error('所有周期数据均不可用，请稍后重试');",
+"    forecastPair=d.pair;loadForecast(forecastPair,requestId);",
+"    const failedCount=Array.isArray(d.timeframes)?d.timeframes.filter(x=>x.status==='error').length:0;if(failedCount>0)$('error').textContent='部分周期数据不可用（'+failedCount+'/'+(Array.isArray(d.timeframes)?d.timeframes.length:7)+'），其余可用周期仍可查看。',",
 "    $('summary').innerHTML=" +
 "'<div class=\"card\"><div class=\"label\">当前</div><div class=\"value\">'+d.symbol+'</div></div>'+" +
 "'<div class=\"card\"><div class=\"label\">标的价格</div><div class=\"value\">'+n(d.price,2)+'</div></div>'+" +
-"'<div class=\"card\"><div class=\"label\">1H QuantVote</div><div class=\"value '+cls(c.vote)+'\">'+c.vote+'</div></div>'+" +
-"'<div class=\"card\"><div class=\"label\">1H Score</div><div class=\"value '+cls(c.vote)+'\">'+c.score+' / 7</div></div>'+" +
-"'<div class=card><div class=label>多周期确认 Vote</div><div class=value>'+(d.multiTimeframeVote&&d.multiTimeframeVote.vote||'NO_DATA')+' · '+n(d.multiTimeframeVote&&d.multiTimeframeVote.score,2)+'</div></div>' +",
+"'<div class=\"card\"><div class=\"label\">'+esc(c.interval)+' QuantVote</div><div class=\"value '+cls(c.vote)+'\">'+c.vote+'</div></div>'+" +
+"'<div class=\"card\"><div class=\"label\">'+esc(c.interval)+' Score</div><div class=\"value '+cls(c.vote)+'\">'+c.score+' / 7</div></div>'+" +
+"'<div class=card><div class=label>多周期确认 Vote（评分非概率）</div><div class=value>'+(d.multiTimeframeVote&&d.multiTimeframeVote.vote||'NO_DATA')+' · '+n(d.multiTimeframeVote&&d.multiTimeframeVote.score,2)+'</div></div>' +",
 "'<div class=\"card\"><div class=\"label\">风险</div><div class=\"value\">'+(c.risk||'UNKNOWN')+'</div></div>';",
-"    $('table').innerHTML='<table><thead><tr><th>周期</th><th>分类</th><th>价格</th><th>Score</th><th>Vote</th><th>Trend</th><th>RSI</th><th>ADX</th></tr></thead><tbody>'+d.timeframes.map(x=>'<tr><td>'+x.interval+'</td><td>'+x.groupLabel+'</td><td>'+n(x.price)+'</td><td class=\"'+cls(x.vote)+'\">'+x.score+'</td><td class=\"'+cls(x.vote)+'\">'+x.vote+'</td><td>'+x.trend+'</td><td>'+n(x.rsi,1)+'</td><td>'+n(x.adx,1)+'</td></tr>').join('')+'</tbody></table>';",
+"    $('table').innerHTML='<table><thead><tr><th>周期</th><th>分类</th><th>价格</th><th>Score</th><th>Vote</th><th>Trend</th><th>RSI</th><th>ADX</th></tr></thead><tbody>'+d.timeframes.map(x=>x.status==='error'?'<tr><td>'+esc(x.interval)+'</td><td>'+esc(x.groupLabel)+'</td><td>—</td><td>—</td><td class=\"neutral\" title=\"'+esc(x.error||'该周期分析失败')+'\">数据不可用</td><td>—</td><td>—</td><td>—</td></tr>':'<tr><td>'+esc(x.interval)+'</td><td>'+esc(x.groupLabel)+'</td><td>'+n(x.price)+'</td><td class=\"'+cls(x.vote)+'\">'+x.score+'</td><td class=\"'+cls(x.vote)+'\">'+esc(x.vote)+'</td><td>'+esc(x.trend)+'</td><td>'+n(x.rsi,1)+'</td><td>'+n(x.adx,1)+'</td></tr>').join('')+'</tbody></table>';",
 "    $('groups').innerHTML=['short','medium','long'].map(g=>{const x=d.groups[g];return '<span class=\"pill\">'+(g==='short'?'短期':g==='medium'?'中期':'长期')+'：'+x.label+' · 净分 '+x.netScore+' · 方向一致 '+x.directionConsistency+'% · 强度 '+x.consistency+'%</span>'}).join('');",
 "    const i=c.indicators;",
 "    const fields=[['EMA20',i.ema20],['EMA50',i.ema50],['EMA200',i.ema200],['RSI14',i.rsi14],['MACD',i.macd],['MACD Histogram',i.macdHistogram],['KDJ K',i.k],['KDJ D',i.d],['KDJ J',i.j],['Boll Middle',i.bollMiddle],['Boll Upper',i.bollUpper],['Boll Lower',i.bollLower],['ATR14',i.atr14],['ATR %',i.atrPercent],['Volume Ratio',i.volumeRatio],['ADX',i.adx],['+DI',i.plusDI],['-DI',i.minusDI],['OBV',i.obv],['OBV Trend',i.obvTrend]];",
-"    $('indicators').innerHTML=fields.map(x=>'<div class=\"card\"><div class=\"label\">'+x[0]+'</div><div class=\"value\">'+(x[0]==='OBV Trend'?String(x[1]||'neutral').toUpperCase():n(x[1],2))+'</div></div>').join(''); const renderVoteReasons=()=>{const interval=$('voteReasonInterval').value;const selected=d.timeframes.find(x=>x.interval===interval);const reasons=selected&&selected.reasons||[];$('voteReasons').innerHTML='<div class=\"small\">当前周期：'+esc(interval)+'</div>'+ (reasons.map((r,idx)=>'<div class=\"reason\"><span>Vote '+(idx+1)+'</span><span>'+esc(r)+'</span></div>').join('')||'<div class=\"small\">该周期暂无判断依据</div>');};$('voteReasonInterval').onchange=renderVoteReasons;renderVoteReasons(); $('regime').innerHTML='<div class=\"grid\"><div class=\"card\"><div class=\"label\">1D 市场状态</div><div class=\"value\" id=\"regimeValue\">加载中</div></div><div class=\"card\"><div class=\"label\">整体多周期</div><div class=\"value\">'+esc(d.alignment.label)+'</div></div></div>'; $('backtest').innerHTML='<div class=\"small\">正在计算基准回测...</div>'; $('rawData').textContent=JSON.stringify(c.indicators,null,2); try{const rr=await fetch('/api/regime?pair='+encodeURIComponent(d.pair));const rd=await rr.json();if(requestId!==loadSeq)return;$('regimeValue').textContent=rd.regime||'—';}catch(_){if(requestId===loadSeq)$('regimeValue').textContent='—';} try{const br=await fetch('/api/backtest?pair='+encodeURIComponent(d.pair)+'&interval=1H');const bd=await br.json();if(requestId!==loadSeq)return;if(br.ok&&bd.status==='ok'&&bd.backtestStatus==='insufficient_data'){$('backtest').innerHTML='<div class=\"error\">历史数据不足（少于220根K线），暂无法进行有效回测</div>';}else if(br.ok&&bd.status==='ok'){$('backtest').innerHTML='<div class=\"grid\"><div class=\"card\"><div class=\"label\">Trades</div><div class=\"value\">'+n(bd.trades,0)+'</div></div><div class=\"card\"><div class=\"label\">Win Rate</div><div class=\"value\">'+n(bd.winRate*100,1)+'%</div></div><div class=\"card\"><div class=\"label\">Return</div><div class=\"value\">'+n(bd.cumulativeReturn*100,2)+'%</div></div><div class=\"card\"><div class=\"label\">Max DD</div><div class=\"value\">'+n(bd.maxDrawdown*100,2)+'%</div></div><div class=\"card\"><div class=\"label\">Sharpe</div><div class=\"value\">'+n(bd.sharpe,2)+'</div></div><div class=\"card\"><div class=\"label\">Profit Factor</div><div class=\"value\">'+n(bd.profitFactor,2)+'</div></div></div>';}else{$('backtest').innerHTML='<div class=\"error\">回测失败</div>';}}catch(_){if(requestId===loadSeq)$('backtest').innerHTML='<div class=\"error\">回测暂时不可用</div>';}",
-"  }catch(e){if(requestId===loadSeq)$('error').textContent=e.message||String(e)}",
+"    $('indicators').innerHTML=fields.map(x=>'<div class=\"card\"><div class=\"label\">'+x[0]+'</div><div class=\"value\">'+(x[0]==='OBV Trend'?String(x[1]||'neutral').toUpperCase():n(x[1],2))+'</div></div>').join(''); const renderVoteReasons=()=>{const interval=$('voteReasonInterval').value;const selected=d.timeframes.find(x=>x.interval===interval);const reasons=selected&&selected.reasons||[];$('voteReasons').innerHTML='<div class=\"small\">当前周期：'+esc(interval)+'</div>'+ (reasons.map((r,idx)=>'<div class=\"reason\"><span>Vote '+(idx+1)+'</span><span>'+esc(r)+'</span></div>').join('')||'<div class=\"small\">该周期暂无判断依据</div>');};$('voteReasonInterval').onchange=renderVoteReasons;renderVoteReasons(); $('regime').innerHTML='<div class=\"grid\"><div class=\"card\"><div class=\"label\">1D 市场状态</div><div class=\"value\" id=\"regimeValue\">加载中</div></div><div class=\"card\"><div class=\"label\">整体多周期</div><div class=\"value\">'+esc(d.alignment.label)+'</div></div></div>'; $('backtest').innerHTML='<div class=\"small\">正在计算基准回测...</div>'; $('rawData').textContent=JSON.stringify(c.indicators,null,2); try{const rr=await fetch('/api/regime?pair='+encodeURIComponent(d.pair));const rd=await rr.json();if(requestId!==loadSeq)return;$('regimeValue').textContent=rd.regime||'—';}catch(_){if(requestId===loadSeq)$('regimeValue').textContent='—';} try{const br=await fetch('/api/backtest?pair='+encodeURIComponent(d.pair)+'&interval='+encodeURIComponent($('backtestInterval').value||'1H'));const bd=await br.json();if(requestId!==loadSeq)return;if(br.ok&&bd.status==='ok'&&bd.backtestStatus==='insufficient_data'){$('backtest').innerHTML='<div class=\"error\">历史数据不足（少于220根K线），暂无法进行有效回测</div>';}else if(br.ok&&bd.status==='ok'&&bd.backtestStatus==='no_trades'){$('backtest').innerHTML='<div class=\"error\">历史数据足够，但当前策略条件未产生交易</div>';}else if(br.ok&&bd.status==='ok'){$('backtest').innerHTML='<div class=\"grid\"><div class=\"card\"><div class=\"label\">Trades</div><div class=\"value\">'+n(bd.trades,0)+'</div></div><div class=\"card\"><div class=\"label\">Win Rate</div><div class=\"value\">'+n(bd.winRate*100,1)+'%</div></div><div class=\"card\"><div class=\"label\">Return</div><div class=\"value\">'+n(bd.cumulativeReturn*100,2)+'%</div></div><div class=\"card\"><div class=\"label\">Max DD</div><div class=\"value\">'+n(bd.maxDrawdown*100,2)+'%</div></div><div class=\"card\"><div class=\"label\">Sharpe</div><div class=\"value\">'+n(bd.sharpe,2)+'</div></div><div class=\"card\"><div class=\"label\">Profit Factor</div><div class=\"value\">'+(bd.profitFactorStatus==='no_losses'?'无亏损（不适用）':bd.profitFactorStatus==='no_trades'?'无交易':bd.profitFactorStatus==='no_profit_or_loss'?'无盈亏':n(bd.profitFactor,2))+'</div></div></div>';}else{$('backtest').innerHTML='<div class=\"error\">'+esc(bd.error||'回测失败')+'</div>';}}catch(_){if(requestId===loadSeq)$('backtest').innerHTML='<div class=\"error\">回测暂时不可用</div>';}",
+"  }catch(e){if(requestId===loadSeq){$('error').textContent=e.message||String(e);$('backtest').innerHTML='<div class=\"error\">行情加载失败，回测未执行</div>';}}",
 "}",
-"$('refresh').onclick=load;$('searchBtn').onclick=()=>{clearTimeout(searchTimer);searchPairs()};$('symbol').addEventListener('input',()=>{clearTimeout(searchTimer);const q=$('symbol').value.trim();if(q.length<2){searchRequestId++;hideSearch();return;}searchTimer=setTimeout(searchPairs,300)});$('symbol').addEventListener('focus',()=>{if($('symbol').value.trim().length>=2)searchPairs()});$('symbol').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();clearTimeout(searchTimer);searchPairs()}});document.addEventListener('click',e=>{if(!e.target.closest('.searchBox'))hideSearch()});load();",
+"$('forecastInterval').onchange=()=>loadForecast(forecastPair,loadSeq);$('backtestInterval').onchange=load;$('refresh').onclick=load;$('searchBtn').onclick=()=>{clearTimeout(searchTimer);searchPairs()};$('symbol').addEventListener('input',()=>{clearTimeout(searchTimer);const q=$('symbol').value.trim();if(q.length<2){searchRequestId++;hideSearch();return;}searchTimer=setTimeout(searchPairs,300)});$('symbol').addEventListener('focus',()=>{if($('symbol').value.trim().length>=2)searchPairs()});$('symbol').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();clearTimeout(searchTimer);searchPairs()}});document.addEventListener('click',e=>{if(!e.target.closest('.searchBox'))hideSearch()});load();",
 "</script>",
 "</body>",
 "</html>"
@@ -1082,7 +1171,17 @@ async function handlePairs(url) {
     });
   }
 
-  const all = await fetchPairs();
+  let all;
+  try {
+    all = await fetchPairs();
+  } catch (error) {
+    const classified = classifyKrakenError(error);
+    const message = classified.code === "UPSTREAM_ERROR"
+      ? "Kraken 交易对列表获取失败，请稍后重试"
+      : classified.message;
+    return errorResponse(classified.code + ": " + message, classified.httpStatus);
+  }
+
   const results = [];
 
   for (const [key, item] of Object.entries(all)) {
@@ -1094,11 +1193,18 @@ async function handlePairs(url) {
       item.quote
     ].join(" ").toUpperCase();
 
-    if (!text.includes(q) && !(q === "BTC" && text.includes("XBT")) && !(q === "BTCUSDT" && text.includes("XBTUSDT"))) continue;
-
-    let score = 0;
     const base = String(item.base || "").toUpperCase();
     const quote = String(item.quote || "").toUpperCase();
+    const pairNames = [key, item.altname, item.wsname]
+      .map(value => String(value || "").toUpperCase());
+
+    if (
+      !text.includes(q) &&
+      !(q === "BTC" && base.includes("XBT")) &&
+      !(q === "BTCUSDT" && pairNames.some(value => value.includes("XBTUSDT")))
+    ) continue;
+
+    let score = 0;
 
     if (key.toUpperCase() === q) score += 10000;
     if (String(item.altname || "").toUpperCase() === q) score += 10000;
@@ -1232,13 +1338,14 @@ async function handleRegime(url) {
 function runBacktest(candles, interval = "1H") {
   if (candles.length < 220) {
     return {
-      backtestStatus: "insufficient_data",
       trades: 0,
       winRate: 0,
       cumulativeReturn: 0,
       maxDrawdown: 0,
       sharpe: 0,
-      profitFactor: 0
+      profitFactor: 0,
+      profitFactorStatus: "insufficient_data",
+      backtestStatus: "insufficient_data"
     };
   }
 
@@ -1255,7 +1362,14 @@ function runBacktest(candles, interval = "1H") {
   for (let i = 200; i < candles.length; i++) {
     const indicators = calculateIndicators(candles.slice(0, i + 1));
     const vote = calculateVote(indicators);
-    const price = candles[i].close;
+
+    if (inPosition) {
+      const candle = candles[i];
+      const markedHighEquity = equity * (candle.high * 0.999) / (entry * 1.001);
+      const markedLowEquity = equity * (candle.low * 0.999) / (entry * 1.001);
+      peak = Math.max(peak, markedHighEquity);
+      maxDrawdown = Math.max(maxDrawdown, (peak - markedLowEquity) / peak);
+    }
 
     if (!inPosition && vote.score >= 3) {
       if (i + 1 >= candles.length) continue;
@@ -1266,11 +1380,12 @@ function runBacktest(candles, interval = "1H") {
     if (inPosition && vote.score <= 0) {
       if (i + 1 >= candles.length) continue;
       const pct = (candles[i + 1].open * 0.999) / (entry * 1.001) - 1;
+      const tradePnl = equity * pct;
       equity *= 1 + pct;
       returns.push(pct);
 
-      if (pct > 0) wins.push(pct);
-      else losses.push(pct);
+      if (tradePnl > 0) wins.push(tradePnl);
+      else losses.push(tradePnl);
 
       peak = Math.max(peak, equity);
       maxDrawdown = Math.max(maxDrawdown, (peak - equity) / peak);
@@ -1283,11 +1398,12 @@ function runBacktest(candles, interval = "1H") {
   if (inPosition) {
     const price = candles.at(-1).close;
     const pct = (price * 0.999) / (entry * 1.001) - 1;
+    const tradePnl = equity * pct;
     equity *= 1 + pct;
     returns.push(pct);
 
-    if (pct > 0) wins.push(pct);
-    else losses.push(pct);
+    if (tradePnl > 0) wins.push(tradePnl);
+    else losses.push(tradePnl);
 
     peak = Math.max(peak, equity);
     maxDrawdown = Math.max(maxDrawdown, (peak - equity) / peak);
@@ -1309,19 +1425,24 @@ function runBacktest(candles, interval = "1H") {
     cumulativeReturn: equity - 1,
     maxDrawdown,
     sharpe: deviation && n ? avg / deviation * Math.sqrt(n * 365 * 24 * 60 / (candles.length * ({ "5m": 5, "15m": 15, "1H": 60, "4H": 240, "8H": 480, "1D": 1440, "1W": 10080 }[interval] || 60))) : 0,
-    profitFactor: grossLoss ? grossProfit / grossLoss : (grossProfit > 0 ? Infinity : 0)
+    profitFactor: grossLoss ? grossProfit / grossLoss : 0,
+    profitFactorStatus: grossLoss > 0 ? "calculated" : grossProfit > 0 ? "no_losses" : n > 0 ? "no_profit_or_loss" : "no_trades",
+    backtestStatus: n > 0 ? "ok" : "no_trades"
   };
 }
 
-async function handlePredict(url) {
+async function handlePredict(url, env) {
   const pair = normalizeSymbol(url.searchParams.get("pair") || "XBTUSD");
   const interval = url.searchParams.get("interval") || "1H";
   if (!TIMEFRAMES.includes(interval)) return errorResponse("Unsupported interval: " + interval, 400);
 
   const rows = await fetchKraken(pair, interval, 720);
   if (!Array.isArray(rows) || !rows.length) return errorResponse("Kraken returned no candle data for prediction", 503);
-  if (rows.some(row => !row || ![row.time, row.open, row.high, row.low, row.close, row.volume].every(Number.isFinite) || row.volume < 0 || row.open <= 0 || row.high <= 0 || row.low <= 0 || row.close <= 0 || row.high < row.low)) return errorResponse("Kraken returned invalid candle values for prediction", 502);
-  const indicators = calculateIndicators(rows);
+  if (rows.some(row => !row || ![row.time, row.open, row.high, row.low, row.close, row.volume].every(Number.isFinite) || row.volume < 0 || row.open <= 0 || row.high <= 0 || row.low <= 0 || row.close <= 0 || row.high < row.low || row.high < row.open || row.high < row.close || row.low > row.open || row.low > row.close)) return errorResponse("Kraken returned invalid candle values for prediction", 502);
+  const intervalMinutes = { "5m": 5, "15m": 15, "1H": 60, "4H": 240, "8H": 480, "1D": 1440, "1W": 10080 }[interval];
+  const closedRows = rows.filter(row => row.time * 1000 + intervalMinutes * 60 * 1000 <= Date.now());
+  if (!closedRows.length) return errorResponse("Kraken returned no closed candles for prediction", 503);
+  const indicators = calculateIndicators(closedRows);
   const vote = calculateVote(indicators);
   const horizonsByInterval = {
     "5m": [3, 6, 12, 24],
@@ -1333,6 +1454,31 @@ async function handlePredict(url) {
     "1W": [1, 2, 4, 8]
   };
 
+  const predictions = calculateHistoricalForecast(closedRows, horizonsByInterval[interval], interval);
+  let historySaved = false;
+  if (env && env.MY_BINDING) {
+    try {
+      await env.MY_BINDING.prepare(
+        "INSERT INTO prediction_history (pair, interval, forecast_at, reference_price, forecast_json) VALUES (?, ?, ?, ?, ?)"
+      ).bind(
+        pair,
+        interval,
+        Math.floor(Date.now() / 1000),
+        indicators.price,
+        JSON.stringify({
+          currentSignal: vote.vote,
+          currentScore: vote.score,
+          risk: calculateRisk(indicators),
+          predictionType: "historical_baseline_not_calibrated_forecast",
+          predictions
+        })
+      ).run();
+      historySaved = true;
+    } catch (_) {
+      // Keep the prediction API available if history persistence fails.
+    }
+  }
+
   return json({
     status: "ok",
     source: "kraken",
@@ -1343,9 +1489,10 @@ async function handlePredict(url) {
     currentSignal: vote.vote,
     currentScore: vote.score,
     risk: calculateRisk(indicators),
+    historySaved,
     predictionType: "historical_baseline_not_calibrated_forecast",
-    predictions: calculateHistoricalForecast(rows, horizonsByInterval[interval], interval),
-    note: "Historical return distribution is an unconditional baseline, not a calibrated future probability. Sequential historical samples may still be statistically dependent. Limited samples should not be treated as reliable forecast confidence."
+    predictions,
+    note: "Kraken Spot OHLC returns at most 720 recent entries; older candles cannot be retrieved through this endpoint. Historical returns are an unconditional baseline, not calibrated future probabilities, and sequential samples may be dependent. Limited samples are not reliable forecast confidence."
   });
 }
 
@@ -1353,7 +1500,25 @@ async function handleBacktest(url) {
   const pair = normalizeSymbol(url.searchParams.get("pair") || "XBTUSD");
   const interval = url.searchParams.get("interval") || "1H";
   if (!TIMEFRAMES.includes(interval)) return errorResponse("Unsupported interval: " + interval, 400);
-  const rows = await fetchKraken(pair, interval, 720);
+
+  let rows;
+  try {
+    rows = await fetchKraken(pair, interval, 720);
+  } catch (_) {
+    return errorResponse("Unable to fetch Kraken candle data for backtest", 502);
+  }
+  if (!Array.isArray(rows) || !rows.length) {
+    return errorResponse("Kraken returned no candle data for backtest", 503);
+  }
+  if (rows.some(row => !row || ![row.time, row.open, row.high, row.low, row.close, row.volume].every(Number.isFinite) || row.volume < 0 || row.open <= 0 || row.high <= 0 || row.low <= 0 || row.close <= 0 || row.high < row.low || row.high < row.open || row.high < row.close || row.low > row.open || row.low > row.close)) {
+    return errorResponse("Kraken returned invalid candle values for backtest", 502);
+  }
+
+  const intervalMs = ({ "5m": 5, "15m": 15, "1H": 60, "4H": 240, "8H": 480, "1D": 1440, "1W": 10080 }[interval] || 60) * 60 * 1000;
+  rows = rows.filter(row => row.time * 1000 + intervalMs <= Date.now());
+  if (!rows.length) {
+    return errorResponse("Kraken returned no closed candles for backtest", 503);
+  }
 
   return json({
     status: "ok",
@@ -1371,6 +1536,18 @@ async function handleAnalysis(url) {
   const pair = normalizeSymbol(url.searchParams.get("symbol") || url.searchParams.get("pair") || "XBTUSD");
   const data = await analyzeAll(pair);
 
+  if (!data.current || !data.current.indicators) {
+    const errors = data.timeframes.filter(x => x.status === "error");
+    const priority = ["INVALID_PAIR", "RATE_LIMITED", "NO_CANDLE_DATA", "UPSTREAM_ERROR"];
+    const selected = priority
+      .map(code => errors.find(x => x.errorCode === code))
+      .find(Boolean);
+    if (selected) {
+      return errorResponse(selected.errorCode + ": " + classifyKrakenError(new Error(selected.error)).message, selected.errorHttpStatus);
+    }
+    return errorResponse("所有周期分析均失败，请稍后重试", 503);
+  }
+
   return json({
     status: "ok",
     version: VERSION,
@@ -1379,7 +1556,7 @@ async function handleAnalysis(url) {
   });
 }
 
-async function handleRequest(request) {
+async function handleRequest(request, env) {
   const url = new URL(request.url);
 
   if (request.method === "OPTIONS") {
@@ -1427,7 +1604,7 @@ async function handleRequest(request) {
     if (url.pathname === "/api/indicators") return handleIndicators(url);
     if (url.pathname === "/api/vote") return handleVote(url);
     if (url.pathname === "/api/regime") return handleRegime(url);
-    if (url.pathname === "/api/predict") return handlePredict(url);
+    if (url.pathname === "/api/predict") return handlePredict(url, env);
     if (url.pathname === "/api/backtest") return handleBacktest(url);
 
     return errorResponse("Not Found", 404);
@@ -1437,7 +1614,7 @@ async function handleRequest(request) {
 }
 
 export default {
-  async fetch(request) {
-    return handleRequest(request);
+  async fetch(request, env) {
+    return handleRequest(request, env);
   }
 };
