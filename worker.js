@@ -137,26 +137,57 @@ function aggregate8H(rows) {
 
 function aggregate1W(rows) {
   const buckets = new Map();
+
   for (const r of rows) {
+    if (!r || !Number.isFinite(r.time)) continue;
+
     const date = new Date(r.time * 1000);
     const day = date.getUTCDay();
     const mondayOffset = day === 0 ? 6 : day - 1;
     const monday = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() - mondayOffset));
     const bucket = Math.floor(monday.getTime() / 1000);
-    let a = buckets.get(bucket);
-    if (!a) {
-      a = { time: bucket, open: r.open, high: r.high, low: r.low, close: r.close, vwapValue: r.vwap * r.volume, volume: r.volume, count: r.count };
-      buckets.set(bucket, a);
-    } else {
-      a.high = Math.max(a.high, r.high);
-      a.low = Math.min(a.low, r.low);
-      a.close = r.close;
-      a.vwapValue += r.vwap * r.volume;
-      a.volume += r.volume;
-      a.count += r.count;
+    let candles = buckets.get(bucket);
+
+    if (!candles) {
+      candles = new Map();
+      buckets.set(bucket, candles);
     }
+
+    // A daily candle timestamp may only contribute once to a weekly candle.
+    if (!candles.has(r.time)) candles.set(r.time, r);
   }
-  return [...buckets.values()].sort((a,b)=>a.time-b.time).map(r=>({time:r.time,open:r.open,high:r.high,low:r.low,close:r.close,vwap:r.volume?r.vwapValue/r.volume:r.close,volume:r.volume,count:r.count}));
+
+  return [...buckets.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([bucket, candles]) => {
+      const ordered = [...candles.values()].sort((a, b) => a.time - b.time);
+      const first = ordered[0];
+      const last = ordered[ordered.length - 1];
+      let high = -Infinity;
+      let low = Infinity;
+      let volume = 0;
+      let count = 0;
+      let vwapValue = 0;
+
+      for (const r of ordered) {
+        high = Math.max(high, r.high);
+        low = Math.min(low, r.low);
+        volume += r.volume;
+        count += r.count;
+        vwapValue += r.vwap * r.volume;
+      }
+
+      return {
+        time: bucket,
+        open: first.open,
+        high,
+        low,
+        close: last.close,
+        vwap: volume ? vwapValue / volume : last.close,
+        volume,
+        count
+      };
+    });
 }
 
 async function fetchKraken(symbol, interval, limit = 720) {
