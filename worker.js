@@ -726,7 +726,7 @@ function calculateVote(indicators) {
         ? -1
         : indicators.price <= indicators.bollLower
           ? 1
-          : indicators.price >= indicators.bollMiddle
+          : indicators.price > indicators.bollMiddle
             ? 1
             : indicators.price < indicators.bollMiddle
               ? -1
@@ -785,7 +785,12 @@ function calculateRisk(indicators) {
 }
 
 function calculateAlignment(items) {
-  const valid = items.filter(Boolean);
+  const valid = items
+    .filter(x => x && Number.isFinite(x.score))
+    .map(x => ({
+      ...x,
+      score: Math.max(-7, Math.min(7, x.score))
+    }));
   if (!valid.length) {
     return {
       label: "NO_DATA",
@@ -841,11 +846,21 @@ function calculateMultiTimeframeVote(items) {
     "8H": 0.15,
     "1D": 0.15
   };
-  const valid = items.filter(item =>
-    item &&
-    Object.prototype.hasOwnProperty.call(weights, item.interval) &&
-    Number.isFinite(item.score)
-  );
+  const seen = new Set();
+  const valid = items.filter(item => {
+    if (
+      !item ||
+      !Object.prototype.hasOwnProperty.call(weights, item.interval) ||
+      !Number.isFinite(item.score) ||
+      seen.has(item.interval)
+    ) return false;
+
+    seen.add(item.interval);
+    return true;
+  }).map(item => ({
+    interval: item.interval,
+    score: Math.max(-7, Math.min(7, item.score))
+  }));
   const totalWeight = valid.reduce((sum, item) => sum + weights[item.interval], 0);
   if (!totalWeight) {
     return { score: 0, vote: "NO_DATA", usedTimeframes: [], weights };
@@ -854,7 +869,7 @@ function calculateMultiTimeframeVote(items) {
     (sum, item) => sum + (item.score / 7) * weights[item.interval],
     0
   ) / totalWeight * 7;
-  const score = Math.round(weightedScore * 100) / 100;
+  const score = Math.round(Math.max(-7, Math.min(7, weightedScore)) * 100) / 100;
   return {
     score,
     vote: score >= 1.5 ? "BULLISH" : score <= -1.5 ? "BEARISH" : "NEUTRAL",
@@ -1293,7 +1308,7 @@ function runBacktest(candles, interval = "1H") {
     winRate: n ? wins.length / n : 0,
     cumulativeReturn: equity - 1,
     maxDrawdown,
-    sharpe: deviation ? avg / deviation * Math.sqrt(interval === "5m" ? 365 * 24 * 12 : interval === "15m" ? 365 * 24 * 4 : interval === "1H" ? 365 * 24 : interval === "4H" ? 365 * 6 : interval === "8H" ? 365 * 3 : interval === "1D" ? 365 : 52) : 0,
+    sharpe: deviation && n ? avg / deviation * Math.sqrt(n * 365 * 24 * 60 / (candles.length * ({ "5m": 5, "15m": 15, "1H": 60, "4H": 240, "8H": 480, "1D": 1440, "1W": 10080 }[interval] || 60))) : 0,
     profitFactor: grossLoss ? grossProfit / grossLoss : (grossProfit > 0 ? Infinity : 0)
   };
 }
@@ -1337,6 +1352,7 @@ async function handlePredict(url) {
 async function handleBacktest(url) {
   const pair = normalizeSymbol(url.searchParams.get("pair") || "XBTUSD");
   const interval = url.searchParams.get("interval") || "1H";
+  if (!TIMEFRAMES.includes(interval)) return errorResponse("Unsupported interval: " + interval, 400);
   const rows = await fetchKraken(pair, interval, 720);
 
   return json({
