@@ -799,6 +799,36 @@ function calculateAlignment(items) {
   };
 }
 
+function calculateMultiTimeframeVote(items) {
+  const weights = {
+    "15m": 0.10,
+    "1H": 0.35,
+    "4H": 0.25,
+    "8H": 0.15,
+    "1D": 0.15
+  };
+  const valid = items.filter(item =>
+    item &&
+    Object.prototype.hasOwnProperty.call(weights, item.interval) &&
+    Number.isFinite(item.score)
+  );
+  const totalWeight = valid.reduce((sum, item) => sum + weights[item.interval], 0);
+  if (!totalWeight) {
+    return { score: 0, vote: "NO_DATA", usedTimeframes: [], weights };
+  }
+  const weightedScore = valid.reduce(
+    (sum, item) => sum + (item.score / 7) * weights[item.interval],
+    0
+  ) / totalWeight * 7;
+  const score = Math.round(weightedScore * 100) / 100;
+  return {
+    score,
+    vote: score >= 1.5 ? "BULLISH" : score <= -1.5 ? "BEARISH" : "NEUTRAL",
+    usedTimeframes: valid.map(item => item.interval),
+    weights
+  };
+}
+
 function calculateHistoricalForecast(candles, horizons, interval) {
   return horizons.filter(horizon => Number.isInteger(horizon) && horizon > 0).map(horizon => {
     const returns = [];
@@ -879,6 +909,7 @@ async function analyzeAll(pair) {
     pair,
     timeframes: result,
     alignment: calculateAlignment(result),
+    multiTimeframeVote: calculateMultiTimeframeVote(result),
     groups,
     price: result.find(x => x.interval === "1H")?.price || result[0]?.price || null,
     current: result.find(x => x.interval === "1H") || result[0] || null
@@ -971,6 +1002,7 @@ function buildHTML() {
 "'<div class=\"card\"><div class=\"label\">标的价格</div><div class=\"value\">'+n(d.price,2)+'</div></div>'+" +
 "'<div class=\"card\"><div class=\"label\">1H QuantVote</div><div class=\"value '+cls(c.vote)+'\">'+c.vote+'</div></div>'+" +
 "'<div class=\"card\"><div class=\"label\">1H Score</div><div class=\"value '+cls(c.vote)+'\">'+c.score+' / 7</div></div>'+" +
+"'<div class=\"card\"><div class=\"label\">多周期确认 Vote</div><div class=\"value '+cls(d.multiTimeframeVote&&d.multiTimeframeVote.vote)+'\">'+(d.multiTimeframeVote&&d.multiTimeframeVote.vote||'NO_DATA')+' · '+n(d.multiTimeframeVote&&d.multiTimeframeVote.score,2)+'</div></div>' +
 "'<div class=\"card\"><div class=\"label\">风险</div><div class=\"value\">'+(c.risk||'UNKNOWN')+'</div></div>';",
 "    $('table').innerHTML='<table><thead><tr><th>周期</th><th>分类</th><th>价格</th><th>Score</th><th>Vote</th><th>Trend</th><th>RSI</th><th>ADX</th></tr></thead><tbody>'+d.timeframes.map(x=>'<tr><td>'+x.interval+'</td><td>'+x.groupLabel+'</td><td>'+n(x.price)+'</td><td class=\"'+cls(x.vote)+'\">'+x.score+'</td><td class=\"'+cls(x.vote)+'\">'+x.vote+'</td><td>'+x.trend+'</td><td>'+n(x.rsi,1)+'</td><td>'+n(x.adx,1)+'</td></tr>').join('')+'</tbody></table>';",
 "    $('groups').innerHTML=['short','medium','long'].map(g=>{const x=d.groups[g];return '<span class=\"pill\">'+(g==='short'?'短期':g==='medium'?'中期':'长期')+'：'+x.label+' · 净分 '+x.netScore+' · 方向一致 '+x.directionConsistency+'% · 强度 '+x.consistency+'%</span>'}).join('');",
